@@ -1,0 +1,4 @@
+PyQt6>=6.6,<7
+pyserial>=3.5,<4
+pyqtgraph>=0.13.7,<0.15
+opencv-python>=4.9,<5

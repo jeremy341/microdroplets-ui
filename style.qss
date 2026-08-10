@@ -1,0 +1,1790 @@
+/* Global design tokens
+   page gutter: 32px | section/card gap: 16px | radius: 6px
+   standard control: 48px | primary control: 54px | row: 48px
+*/
+
+QMainWindow {
+    background-color: #F8FAF9;
+}
+
+QWidget {
+    color: #29332F;
+    font-family: "Segoe UI";
+    font-size: 14px;
+    font-weight: 400;
+}
+
+QLabel {
+    background-color: transparent;
+    color: #29332F;
+}
+
+QToolTip {
+    background-color: #26322D;
+    color: #FFFFFF;
+
+    border: none;
+    border-radius: 6px;
+
+    padding: 6px 9px;
+
+    font-size: 13px;
+}
+
+
+/* Sidebar */
+
+QWidget#sidebar {
+    background-color: #EEF5F2;
+
+    border: none;
+    border-right: 1px solid #D8E1DC;
+}
+
+QWidget#sidebar QPushButton {
+    background-color: transparent;
+    color: #3B4741;
+
+    border: 1px solid transparent;
+    border-radius: 6px;
+
+    padding: 11px 18px;
+    text-align: left;
+
+    font-size: 15px;
+    font-weight: 600;
+}
+
+QWidget#sidebar QPushButton:hover {
+    background-color: #E0ECE6;
+    color: #2D3933;
+}
+
+QWidget#sidebar QPushButton:checked {
+    background-color: #FFFFFF;
+    color: #368A6C;
+
+    border: 1px solid #DDE6E1;
+}
+
+QWidget#sidebar QPushButton:pressed {
+    background-color: #D1E4DA;
+    color: #2E775D;
+}
+
+QWidget#sidebar QPushButton:disabled {
+    background-color: transparent;
+    color: #A3ADA8;
+}
+
+
+/* Main page area */
+
+QStackedWidget {
+    background-color: #F8FAF9;
+    border: none;
+}
+
+QWidget#homePage,
+QWidget#pumpsPage,
+QWidget#valvesPage,
+QWidget#sensorsPage,
+QWidget#cameraPage {
+    background-color: #F8FAF9;
+}
+
+
+/* Page titles */
+
+QLabel#pageTitle {
+    background-color: transparent;
+    color: #202B26;
+
+    font-size: 30px;
+    font-weight: 700;
+}
+
+
+/* Buttons */
+
+QPushButton {
+    background-color: #FFFFFF;
+    color: #34413B;
+
+    border: 1px solid #D5DFDA;
+    border-radius: 6px;
+
+    padding: 8px 14px;
+
+    font-size: 14px;
+    font-weight: 600;
+}
+
+QPushButton:hover {
+    background-color: #F7FBF9;
+    color: #2F785E;
+
+    border-color: #85C4AA;
+}
+
+QPushButton:pressed {
+    background-color: #E3F0E9;
+    color: #28694F;
+
+    border-color: #67AF90;
+}
+
+QPushButton:focus {
+    border-color: #58A982;
+}
+
+QPushButton:disabled {
+    background-color: #F1F3F2;
+    color: #A2AAA6;
+
+    border-color: #E2E7E4;
+}
+
+
+/* Driver and device cards */
+
+QGroupBox#driverCard {
+    background-color: #FFFFFF;
+    color: #26322D;
+
+    border: 1px solid #DEE6E2;
+    border-radius: 6px;
+
+    margin-top: 0;
+    padding-top: 23px;
+
+    font-size: 16px;
+    font-weight: 600;
+}
+
+QGroupBox#driverCard::title {
+    subcontrol-origin: padding;
+    subcontrol-position: top left;
+
+    left: 18px;
+    top: 8px;
+
+    padding: 0;
+    margin: 0;
+
+    background-color: transparent;
+    color: #26322D;
+
+    font-size: 16px;
+    font-weight: 600;
+}
+
+QGroupBox#driverCard:disabled {
+    background-color: #F3F5F4;
+    color: #99A39E;
+
+    border-color: #E3E8E5;
+}
+
+
+/* Device information */
+
+QLabel#deviceName {
+    color: #26322D;
+
+    font-size: 16px;
+    font-weight: 600;
+}
+
+QLabel#deviceInformation {
+    color: #69756F;
+
+    font-size: 13px;
+    font-weight: 400;
+}
+
+
+/* Parameter labels */
+
+QLabel#parameterLabel {
+    background-color: transparent;
+    color: #65716B;
+
+    font-size: 13px;
+    font-weight: 600;
+}
+
+
+/* Spin boxes */
+
+QSpinBox#parameterSpinBox {
+    background-color: #FFFFFF;
+    color: #29332F;
+
+    border: 1px solid #D6E0DB;
+    border-radius: 6px;
+
+    padding: 6px 8px;
+
+    selection-background-color: #D8EEE3;
+    selection-color: #26322D;
+
+    font-size: 14px;
+    font-weight: 500;
+}
+
+QSpinBox#parameterSpinBox:hover {
+    background-color: #FCFEFD;
+    border-color: #8BC8AF;
+}
+
+QSpinBox#parameterSpinBox:focus {
+    background-color: #FFFFFF;
+    border-color: #58A982;
+}
+
+QSpinBox#parameterSpinBox:disabled {
+    background-color: #F1F4F2;
+    color: #9BA5A0;
+
+    border-color: #E1E7E4;
+}
+
+
+/* Sliders */
+
+QSlider#parameterSlider {
+    min-height: 22px;
+}
+
+QSlider#parameterSlider::groove:horizontal {
+    height: 4px;
+
+    background-color: #DCE5E0;
+    border: none;
+    border-radius: 2px;
+}
+
+QSlider#parameterSlider::sub-page:horizontal {
+    background-color: #5CAF88;
+    border-radius: 2px;
+}
+
+QSlider#parameterSlider::add-page:horizontal {
+    background-color: #DCE5E0;
+    border-radius: 2px;
+}
+
+QSlider#parameterSlider::handle:horizontal {
+    width: 16px;
+    height: 16px;
+
+    margin: -8px 0;
+
+    background-color: #5CAF88;
+
+    border: 2px solid #FFFFFF;
+    border-radius: 8px;
+}
+
+/* Camera workspace */
+
+/* Camera header toolbar: compact controls matching the Sensors toolbar. */
+QLabel#cameraFieldLabel {
+    color: #26322D;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+QComboBox#cameraCombo {
+    background-color: #FFFFFF;
+    color: #29332F;
+    border: 1px solid #D6E0DB;
+    border-radius: 6px;
+    padding: 0 30px 0 12px;
+    font-size: 13px;
+    font-weight: 400;
+}
+
+QComboBox#cameraCombo:hover,
+QComboBox#cameraCombo:focus {
+    border-color: #58A982;
+}
+
+QComboBox#cameraCombo::drop-down {
+    width: 28px;
+    border: none;
+}
+
+QComboBox#cameraCombo::down-arrow {
+    width: 10px;
+    height: 6px;
+}
+
+QComboBox#cameraCombo QAbstractItemView {
+    background-color: #FFFFFF;
+    color: #29332F;
+    border: 1px solid #D6E0DB;
+    selection-background-color: #E5F2EB;
+    selection-color: #29332F;
+}
+
+QLabel#cameraStatus {
+    color: #368A6C;
+    background-color: #FFFFFF;
+    border: 1px solid #D5DFDA;
+    border-radius: 6px;
+    padding: 0 10px;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+QPushButton#cameraSecondaryButton,
+QPushButton#cameraPrimaryButton {
+    background-color: #FFFFFF;
+    border-radius: 6px;
+    padding: 0 10px;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+QPushButton#cameraSecondaryButton {
+    color: #34413B;
+    border: 1px solid #D5DFDA;
+}
+
+QPushButton#cameraSecondaryButton:hover {
+    background-color: #F7FBF9;
+    border-color: #85C4AA;
+}
+
+QPushButton#cameraPrimaryButton {
+    color: #2F785E;
+    border: 1px solid #368A6C;
+}
+
+QPushButton#cameraPrimaryButton:hover {
+    background-color: #F3FAF7;
+    border-color: #2F785E;
+}
+
+QPushButton#cameraPrimaryButton:pressed,
+QPushButton#cameraSecondaryButton:pressed {
+    background-color: #E3F0E9;
+}
+
+QPushButton#cameraPrimaryButton:disabled {
+    color: #A2AAA6;
+    border-color: #E2E7E4;
+}
+
+QGroupBox#cameraCard {
+    background-color: #FFFFFF;
+    color: #202B26;
+    border: 1px solid #D9DEE2;
+    border-radius: 6px;
+    margin-top: 0;
+    padding-top: 28px;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+QGroupBox#cameraCard::title {
+    subcontrol-origin: padding;
+    subcontrol-position: top left;
+    left: 18px;
+    top: 8px;
+    color: #202B26;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+QLabel#cameraPreview {
+    background-color: #303638;
+    color: #DCE5E0;
+    border: 1px solid #202625;
+    border-radius: 6px;
+    font-size: 15px;
+}
+
+QLabel#cameraHint,
+QLabel#cameraValue {
+    color: #748079;
+    font-size: 13px;
+}
+
+QSlider#parameterSlider::handle:horizontal:hover {
+    background-color: #4F9D79;
+}
+
+QSlider#parameterSlider::handle:horizontal:pressed {
+    background-color: #438A69;
+}
+
+QSlider#parameterSlider::groove:horizontal:disabled {
+    background-color: #E5EAE7;
+}
+
+QSlider#parameterSlider::sub-page:horizontal:disabled {
+    background-color: #BFCBC5;
+}
+
+QSlider#parameterSlider::handle:horizontal:disabled {
+    background-color: #BFCBC5;
+}
+
+
+/* Waveform dropdown */
+
+QComboBox#waveformBox {
+    background-color: #FFFFFF;
+    color: #29332F;
+
+    border: 1px solid #D6E0DB;
+    border-radius: 6px;
+
+    padding: 6px 7px;
+
+    selection-background-color: #D8EEE3;
+    selection-color: #26322D;
+
+    font-size: 13px;
+    font-weight: 500;
+}
+
+QComboBox#waveformBox:hover {
+    background-color: #FCFEFD;
+    border-color: #8BC8AF;
+}
+
+QComboBox#waveformBox:focus {
+    border-color: #58A982;
+}
+
+QComboBox#waveformBox:disabled {
+    background-color: #F1F4F2;
+    color: #9BA5A0;
+
+    border-color: #E1E7E4;
+}
+
+QComboBox#waveformBox::drop-down {
+    width: 20px;
+
+    background-color: transparent;
+
+    border: none;
+    border-left: 1px solid transparent;
+}
+
+QComboBox#waveformBox QAbstractItemView {
+    background-color: #FFFFFF;
+    color: #29332F;
+
+    border: 1px solid #D6E0DB;
+    border-radius: 6px;
+
+    padding: 5px;
+    outline: none;
+
+    selection-background-color: #DCEFE5;
+    selection-color: #26322D;
+}
+
+
+/* Vertical scroll bar */
+
+QScrollBar:vertical {
+    width: 10px;
+
+    background-color: transparent;
+
+    border: none;
+    margin: 2px;
+}
+
+QScrollBar::handle:vertical {
+    min-height: 28px;
+
+    background-color: #C8D3CD;
+
+    border: none;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #AEBDB5;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0;
+
+    background: transparent;
+    border: none;
+}
+
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: transparent;
+}
+
+
+/* Horizontal scroll bar */
+
+QScrollBar:horizontal {
+    height: 10px;
+
+    background-color: transparent;
+
+    border: none;
+    margin: 2px;
+}
+
+QScrollBar::handle:horizontal {
+    min-width: 28px;
+
+    background-color: #C8D3CD;
+
+    border: none;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background-color: #AEBDB5;
+}
+
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+    width: 0;
+
+    background: transparent;
+    border: none;
+}
+
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {
+    background: transparent;
+}
+
+/* Dashboard cards */
+
+QGroupBox#deviceCard,
+QGroupBox#overviewCard,
+QGroupBox#activityCard {
+    background-color: #FFFFFF;
+    color: #26322D;
+
+    border: 1px solid #DCE4E0;
+    border-radius: 6px;
+
+    margin-top: 0;
+    padding-top: 0;
+
+    font-size: 15px;
+    font-weight: 600;
+}
+
+QGroupBox#deviceCard::title,
+QGroupBox#overviewCard::title,
+QGroupBox#activityCard::title {
+    subcontrol-origin: padding;
+    subcontrol-position: top left;
+
+    left: 18px;
+    top: 8px;
+
+    padding: 0;
+    margin: 0;
+
+    background-color: transparent;
+    color: #26322D;
+
+    font-size: 15px;
+    font-weight: 600;
+}
+
+
+/* Device information */
+
+QLabel#deviceName {
+    color: #26322D;
+
+    font-size: 16px;
+    font-weight: 600;
+}
+
+QLabel#informationLabel {
+    color: #748079;
+
+    font-size: 12px;
+    font-weight: 400;
+}
+
+QLabel#informationValue {
+    color: #34413B;
+
+    font-size: 13px;
+    font-weight: 500;
+}
+
+
+/* Overview cards */
+
+QGroupBox#overviewCard {
+    min-height: 82px;
+}
+
+QLabel#overviewValue {
+    color: #368A6C;
+
+    font-size: 23px;
+    font-weight: 700;
+}
+
+QLabel#overviewDescription {
+    color: #748079;
+
+    font-size: 12px;
+    font-weight: 400;
+}
+
+
+/* Activity log */
+
+QTextEdit#activityLog {
+    background-color: #F8FAF9;
+    color: #4D5A54;
+
+    border: 1px solid #E1E7E4;
+    border-radius: 6px;
+
+    padding: 10px;
+
+    selection-background-color: #D8EEE3;
+    selection-color: #26322D;
+
+    font-family: "Segoe UI";
+    font-size: 13px;
+}
+
+
+/* Empty state */
+
+QWidget#emptyState {
+    background-color: transparent;
+}
+
+QLabel#emptyStateTitle {
+    color: #34413B;
+
+    font-size: 18px;
+    font-weight: 600;
+}
+
+QLabel#emptyStateDescription {
+    color: #7A8580;
+
+    font-size: 14px;
+    font-weight: 400;
+}
+
+
+/* Universal controls */
+
+QWidget#globalControls {
+    background-color: #F8FAF9;
+    border: none;
+}
+
+QWidget#boardButtonsContainer {
+    background-color: transparent;
+    border: none;
+}
+
+
+/* Sensors workspace — approved mockup */
+
+QWidget#sensorSidePanel,
+QWidget#sensorSidePanel > QWidget,
+QWidget#sensorSidePanel QScrollArea,
+QWidget#sensorSidePanel QScrollArea > QWidget > QWidget,
+QWidget#sensorSidePanel QWidget#qt_scrollarea_viewport,
+QWidget#sensorSidePanel QWidget#sensorCardHeader {
+    background-color: transparent;
+    border: none;
+}
+
+QFrame#sensorChartPanel,
+QFrame#sensorBoardCard {
+    background-color: #FFFFFF;
+    border: 1px solid #D9DEE2;
+    border-radius: 6px;
+}
+
+QFrame#sensorBoardCard[comparison="true"] {
+    border: 1px solid #D9DEE2;
+}
+
+QFrame#sensorBoardCard[comparison="true"] QLabel#sensorDeviceIcon {
+    background-color: #FF1F1F;
+    border-color: #D91F26;
+}
+
+QLabel#sensorComparisonBadge {
+    min-height: 20px;
+    max-height: 20px;
+    background-color: #FFF0F0;
+    color: #D91F26;
+    border: 1px solid #FFC6C8;
+    border-radius: 4px;
+    padding: 0 7px;
+    font-size: 9px;
+    font-weight: 700;
+}
+
+QFrame#sensorChartPanel,
+QWidget#sensorLogConfiguration {
+    min-width: 480px;
+}
+
+QWidget#sensorSidePanel,
+QWidget#sensorLoggingActions {
+    min-width: 270px;
+}
+
+QWidget#sensorChartCanvas {
+    min-height: 360px;
+    background-color: #FFFFFF;
+    border: none;
+}
+
+QWidget#sensorLoggingBar,
+QWidget#sensorLogConfiguration,
+QWidget#sensorLoggingActions {
+    background-color: transparent;
+    border: none;
+}
+
+QWidget#sensorLoggingBar {
+    min-height: 54px;
+    max-height: 54px;
+}
+
+QLabel#sensorSectionTitle {
+    color: #0E1B29;
+    font-size: 20px;
+    font-weight: 700;
+}
+
+QLabel#sensorAxisTitle {
+    color: #162535;
+    font-size: 16px;
+    font-weight: 500;
+}
+
+QLabel#sensorLegendText {
+    color: #324257;
+    font-size: 16px;
+    font-weight: 400;
+}
+
+QPushButton#sensorFitButton,
+QPushButton#sensorAutoScaleButton {
+    min-height: 28px;
+    max-height: 28px;
+    padding: 0 10px;
+    background-color: #FFFFFF;
+    color: #087C55;
+    border: 1px solid #B7D9C9;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    min-height: 40px;
+}
+
+QPushButton#sensorFitButton:hover,
+QPushButton#sensorAutoScaleButton:hover {
+    background-color: #F0F8F4;
+    border-color: #58A982;
+}
+
+QPushButton#sensorFitButton:pressed,
+QPushButton#sensorAutoScaleButton:pressed {
+    background-color: #DDEFE6;
+}
+
+QFrame#sensorLegendLine {
+    min-width: 19px;
+    max-width: 19px;
+    min-height: 2px;
+    max-height: 2px;
+}
+
+/* Logging buttons */
+QPushButton#sensorBrowseButton,
+QPushButton#sensorStartButton,
+QPushButton#sensorStopButton {
+    background-color: #FFFFFF;
+    color: #162535;
+    border: 1px solid #D9DEE3;
+    border-radius: 6px;
+    padding: 0 12px;
+    font-size: 16px;
+    font-weight: 500;
+}
+
+QPushButton#sensorBrowseButton {
+    text-align: center;
+}
+
+QPushButton#sensorBrowseButton:hover {
+    background-color: #F6FBF9;
+    border-color: #A9D5C2;
+}
+
+QPushButton#sensorStartButton {
+    background-color: #FFFFFF;
+}
+
+QPushButton#sensorStartButton:hover,
+QPushButton#sensorStopButton:hover {
+    background-color: #F3FAF7;
+    border-color: #58A982;
+}
+
+QPushButton#sensorStopButton {
+    background-color: #FFFFFF;
+}
+
+QPushButton#sensorStartButton:pressed,
+QPushButton#sensorStopButton:pressed {
+    background-color: #DDEFE6;
+    border-color: #4C9975;
+}
+
+QLineEdit#sensorPathEdit,
+QComboBox#sensorRateBox {
+    background-color: #FFFFFF;
+    color: #314158;
+    border: 1px solid #D9DEE3;
+    border-radius: 6px;
+    padding: 0 12px;
+    font-size: 15px;
+    font-weight: 400;
+}
+
+QLineEdit#sensorPathEdit {
+    min-width: 120px;
+}
+
+QComboBox#sensorRateBox {
+    padding-right: 30px;
+}
+
+QLineEdit#sensorPathEdit:focus,
+QComboBox#sensorRateBox:focus {
+    border-color: #86BDA9;
+}
+
+QComboBox#sensorRateBox::drop-down {
+    width: 30px;
+    border: none;
+}
+
+QComboBox#sensorRateBox::down-arrow {
+    image: none;
+}
+
+QComboBox#sensorRateBox QAbstractItemView {
+    background-color: #FFFFFF;
+    color: #314158;
+    border: 1px solid #D7DDE3;
+    selection-background-color: #E7F3EE;
+    selection-color: #173A2D;
+}
+
+QLabel#sensorRateLabel {
+    color: #27384C;
+    font-size: 15px;
+    font-weight: 400;
+}
+
+QWidget#sensorCardHeader {
+    min-height: 84px;
+}
+
+QLabel#sensorDeviceIcon {
+    min-width: 13px;
+    max-width: 13px;
+    min-height: 13px;
+    max-height: 13px;
+    background-color: #24485C;
+    border: 1px solid #173849;
+    border-radius: 2px;
+}
+
+QLabel#sensorBoardName {
+    color: #0D1B29;
+    font-size: 22px;
+    font-weight: 500;
+}
+
+QLabel#sensorBoardType {
+    color: #40516A;
+    font-size: 14px;
+    font-weight: 400;
+}
+
+QToolButton#sensorExpandButton {
+    min-width: 30px;
+    max-width: 30px;
+    min-height: 30px;
+    max-height: 30px;
+    background-color: transparent;
+    color: #173A55;
+    border: none;
+    border-radius: 5px;
+}
+
+QToolButton#sensorExpandButton:hover {
+    background-color: #F1F5F7;
+}
+
+QWidget#sensorCardBody {
+    background-color: #FFFFFF;
+    border: none;
+    border-top: 1px solid #DCE1E5;
+}
+
+QWidget#sensorRow {
+    min-height: 48px;
+    max-height: 48px;
+    background-color: transparent;
+    border: none;
+}
+
+QWidget#sensorRow:hover {
+    background-color: #F8FBFA;
+}
+
+QWidget#sensorRow:disabled {
+    background-color: #F6F8F8;
+}
+
+QWidget#sensorRow:disabled QLabel#sensorName,
+QWidget#sensorRow:disabled QLabel#sensorValue {
+    color: #A7B0B5;
+}
+
+/* A measurement that is available to click remains readable even while
+   another board is being compared. Only unavailable measurements are muted. */
+QWidget#sensorRow[available="true"] QLabel#sensorName,
+QWidget#sensorRow[available="true"] QLabel#sensorValue {
+    color: #162535;
+}
+
+QLabel#sensorName {
+    color: #162535;
+    font-size: 15px;
+    font-weight: 400;
+}
+
+QLabel#sensorValue {
+    color: #263950;
+    font-size: 13px;
+    font-weight: 400;
+}
+
+QLabel#hideInactiveLabel {
+    color: #25364B;
+    font-size: 12px;
+    font-weight: 400;
+}
+
+QScrollArea#sensorScrollArea {
+    background-color: transparent;
+    border: none;
+}
+
+
+/* Board island */
+
+QFrame#boardIsland {
+    background-color: #FFFFFF;
+
+    border: 1px solid #D7E0DC;
+    border-radius: 6px;
+}
+
+QFrame#boardIsland[active="true"] {
+    border: 2px solid #58A982;
+}
+
+
+/* Main board area */
+
+QFrame#boardIsland QPushButton#boardButton {
+    background-color: transparent;
+    color: #34413B;
+
+    border: none;
+    border-radius: 6px;
+
+    padding: 0 8px;
+    text-align: left;
+
+    font-size: 12px;
+    font-weight: 500;
+}
+
+QFrame#boardIsland QPushButton#boardButton:hover {
+    background-color: #F5FAF7;
+    color: #2F785E;
+}
+
+QFrame#boardIsland QPushButton#boardButton:checked {
+    background-color: transparent;
+    color: #2F785E;
+}
+
+
+/* Board options */
+
+QFrame#boardIsland QToolButton#boardOptionsButton {
+    background-color: transparent;
+    color: #627069;
+
+    border: none;
+    border-radius: 6px;
+
+    padding: 0;
+
+    font-size: 22px;
+    font-weight: 600;
+}
+
+QFrame#boardIsland QToolButton#boardOptionsButton:hover {
+    background-color: #EDF5F1;
+    color: #368A6C;
+}
+
+QFrame#boardIsland QToolButton#boardOptionsButton:pressed {
+    background-color: #DDECE4;
+}
+
+QToolButton#boardOptionsButton::menu-indicator {
+    image: none;
+}
+
+/* Connect dropdown */
+
+QToolButton#connectBoardButton {
+    background-color: #FFFFFF;
+    color: #368A6C;
+
+    border: 1px solid #B7D9C9;
+    border-radius: 6px;
+
+    padding: 0 28px 0 14px;
+
+    font-size: 14px;
+    font-weight: 600;
+}
+
+QToolButton#connectBoardButton:hover {
+    background-color: #F0F8F4;
+    color: #2F785E;
+
+    border-color: #58A982;
+}
+
+QToolButton#connectBoardButton:pressed,
+QToolButton#connectBoardButton:open {
+    background-color: #DDEFE6;
+    color: #28694F;
+
+    border-color: #4C9975;
+}
+
+QToolButton#connectBoardButton::menu-indicator {
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    right: 10px;
+}
+
+
+/* Connect menu */
+
+QMenu {
+    background-color: #FFFFFF;
+    color: #29332F;
+
+    border: 1px solid #D6E0DB;
+    border-radius: 6px;
+
+    padding: 6px;
+}
+
+QMenu::item {
+    border-radius: 6px;
+    padding: 8px 18px;
+}
+
+QMenu::item:selected {
+    background-color: #DCEFE5;
+    color: #26322D;
+}
+
+QMenu::item:disabled {
+    color: #9BA5A0;
+}
+
+QMenu::separator {
+    height: 1px;
+
+    background-color: #E1E7E4;
+
+    margin: 5px 8px;
+}
+
+
+
+/* Universal page title */
+
+QLabel#globalPageTitle {
+    background-color: transparent;
+    color: #202B26;
+
+    font-size: 30px;
+    font-weight: 700;
+}
+
+
+
+/* Bartels-inspired layout refinements */
+
+QWidget#sidebar {
+    background-color: #EEF4F1;
+}
+
+QFrame#sessionManagerFooter {
+    background-color: transparent;
+    border: none;
+}
+
+QLabel#sessionManagerTitle {
+    color: #34413B;
+    font-size: 20px;
+    font-weight: 700;
+}
+
+QWidget#sidebar QPushButton#saveSessionButton,
+QWidget#sidebar QPushButton#loadSessionButton {
+    min-height: 20px;
+    max-height: 48px;
+    background-color: #FFFFFF;
+    color: #368A6C;
+    border: 1px solid #D4E0DA;
+    border-radius: 6px;
+    padding: 7px 10px;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+QWidget#sidebar QPushButton#saveSessionButton:hover,
+QWidget#sidebar QPushButton#loadSessionButton:hover {
+    background-color: #F4FAF7;
+    color: #2F785E;
+    border-color: #85C4AA;
+}
+
+QScrollArea#driverScroll,
+QScrollArea#driverScroll > QWidget > QWidget,
+QWidget#driverContainer {
+    background-color: transparent;
+    border: none;
+}
+
+QGroupBox#driverCard {
+    background-color: #FFFFFF;
+    border: 1px solid #D8E1DC;
+    border-radius: 9px;
+    padding-top: 24px;
+}
+
+/* V20 camera reference layout ------------------------------------------- */
+QWidget#cameraPage {
+    background-color: #FBFCFB;
+}
+
+QWidget#cameraPage QLabel#pageTitle {
+    color: #18231F;
+    font-family: "Segoe UI";
+    font-size: 32px;
+    font-weight: 700;
+}
+
+QWidget#cameraPage QLabel#cameraFieldLabel {
+    color: #26332E;
+    font-size: 15px;
+    font-weight: 400;
+}
+
+QWidget#cameraPage QGroupBox#cameraCard {
+    background-color: #FFFFFF;
+    color: #18231F;
+    border: 1px solid #D7DEE1;
+    border-radius: 8px;
+    margin-top: 0px;
+    padding-top: 38px;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+QWidget#cameraPage QGroupBox#cameraCard::title {
+    subcontrol-origin: padding;
+    subcontrol-position: top left;
+    left: 20px;
+    top: 16px;
+    padding: 0;
+    color: #18231F;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+QWidget#cameraPage QComboBox#cameraCombo {
+    background-color: #FFFFFF;
+    color: #26332E;
+    border: 1px solid #D3DDE0;
+    border-radius: 7px;
+    padding: 0 30px 0 12px;
+    font-size: 13px;
+    font-weight: 400;
+}
+
+QWidget#cameraPage QComboBox#cameraCombo:hover,
+QWidget#cameraPage QComboBox#cameraCombo:focus {
+    border-color: #239A70;
+}
+
+QWidget#cameraPage QComboBox#cameraCombo::drop-down {
+    width: 28px;
+    border: none;
+    background: transparent;
+}
+
+QWidget#cameraPage QComboBox#cameraCombo QAbstractItemView {
+    background-color: #FFFFFF;
+    color: #26332E;
+    border: 1px solid #D3DDE0;
+    selection-background-color: #E7F4EE;
+    selection-color: #18231F;
+    padding: 6px;
+    outline: none;
+}
+
+QWidget#cameraPage QLabel#cameraStatus {
+    background-color: #FFFFFF;
+    color: #16865E;
+    border: 1px solid #D3DDE0;
+    border-radius: 6px;
+    padding: 0 10px;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+QWidget#cameraPage QPushButton#cameraSecondaryButton,
+QWidget#cameraPage QPushButton#cameraPrimaryButton {
+    background-color: #FFFFFF;
+    color: #182D25;
+    border: 1px solid #D1DDE0;
+    border-radius: 6px;
+    padding: 0 10px;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+QWidget#cameraPage QPushButton#cameraPrimaryButton {
+    color: #16865E;
+    border-color: #16865E;
+    font-weight: 600;
+    min-width: 0;
+}
+
+QWidget#cameraPage QPushButton#cameraSecondaryButton {
+    min-width: 0;
+}
+
+QWidget#cameraPage QPushButton#cameraSecondaryButton:hover,
+QWidget#cameraPage QPushButton#cameraActionButton:hover,
+QWidget#cameraPage QPushButton#cameraToggleButton:hover {
+    background-color: #F5FBF8;
+    border-color: #239A70;
+}
+
+QWidget#cameraPage QPushButton#cameraActionButton {
+    background-color: #FFFFFF;
+    color: #21302A;
+    border: 1px solid #D1DDE0;
+    border-radius: 7px;
+    padding: 0 18px;
+    font-size: 15px;
+    font-weight: 500;
+}
+
+QWidget#cameraPage QPushButton#cameraToggleButton {
+    background-color: #FFFFFF;
+    color: #21302A;
+    border: 1px solid #D1DDE0;
+    border-radius: 7px;
+    padding: 0 14px;
+    font-size: 15px;
+    font-weight: 500;
+}
+
+QWidget#cameraPage QPushButton#cameraToggleButton:checked {
+    color: #16865E;
+    border-color: #239A70;
+}
+
+QWidget#cameraPage QPushButton:disabled {
+    color: #A9B3B1;
+    background-color: #F3F5F4;
+    border-color: #E1E6E5;
+}
+
+QWidget#cameraPage QLabel#cameraPreview {
+    background-color: #303638;
+    color: #E5ECE9;
+    border: 1px solid #252B2C;
+    border-radius: 7px;
+    font-size: 15px;
+}
+
+QWidget#cameraPage QLabel#cameraHint,
+QWidget#cameraPage QLabel#cameraValue {
+    color: #7A8783;
+    font-size: 14px;
+}
+
+QWidget#cameraPage QSlider#parameterSlider::groove:horizontal {
+    height: 4px;
+    background-color: #DCE4E1;
+    border-radius: 2px;
+}
+
+QWidget#cameraPage QSlider#parameterSlider::sub-page:horizontal {
+    background-color: #279D74;
+    border-radius: 2px;
+}
+
+QWidget#cameraPage QSlider#parameterSlider::handle:horizontal {
+    width: 18px;
+    height: 18px;
+    margin: -8px 0;
+    background-color: #FFFFFF;
+    border: 1px solid #CBD7D3;
+    border-radius: 9px;
+}
+
+QGroupBox#driverCard::title {
+    left: 16px;
+    top: 8px;
+    color: #202B26;
+    font-size: 15px;
+    font-weight: 700;
+}
+
+QFrame#parameterCard {
+    background-color: #F8FAF9;
+    border: 1px solid #E5EBE8;
+    border-radius: 9px;
+}
+
+QFrame#parameterCard:hover {
+    background-color: #FAFCFB;
+    border-color: #DAE5E0;
+}
+
+QFrame#parameterCard QLabel#parameterLabel {
+    color: #4F5D56;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+/* Shared compact controls used by the pump workspace. */
+QSpinBox#parameterSpinBox,
+QComboBox#waveformBox {
+    min-height: 38px;
+    max-height: 38px;
+    border-radius: 8px;
+}
+/* V25_CAMERA_REFERENCE_CONTROLS -- uniquely scoped camera refinements.
+   Keep this block at the end so it wins over the older camera rules without
+   changing the shell, sidebar, Sensors page, or shared widget styling. */
+
+QWidget#cameraPage QWidget#cameraToolbarActions {
+    background: transparent;
+}
+
+QWidget#cameraPage QPushButton#cameraSecondaryButton,
+QWidget#cameraPage QPushButton#cameraPrimaryButton {
+    min-height: 36px;
+    max-height: 36px;
+    border-radius: 6px;
+    padding: 0 14px;
+    font-size: 15px;
+}
+
+QWidget#cameraPage QPushButton#cameraSecondaryButton {
+    color: #16232D;
+    background: #FFFFFF;
+    border: 1px solid #CBD6DB;
+}
+
+QWidget#cameraPage QPushButton#cameraPrimaryButton {
+    color: #078A68;
+    background: #FFFFFF;
+    border: 1px solid #079B72;
+    font-weight: 600;
+}
+
+QWidget#cameraPage QGroupBox#cameraCard {
+    background: #FFFFFF;
+    border: 1px solid #CBD6DB;
+    border-radius: 7px;
+}
+
+QWidget#cameraPage QGroupBox#cameraCard::title {
+    subcontrol-origin: margin;
+    left: 20px;
+    top: 14px;
+    padding: 0 4px;
+    color: #101C25;
+    font-size: 19px;
+    font-weight: 700;
+}
+
+QWidget#cameraPage QLabel#cameraFieldLabel {
+    color: #182832;
+    font-size: 15px;
+}
+
+QWidget#cameraPage QComboBox#cameraCombo {
+    min-height: 48px;
+    max-height: 48px;
+    padding: 0 36px 0 14px;
+    border: 1px solid #CAD6DB;
+    border-radius: 7px;
+    background: #FFFFFF;
+    color: #1B2B36;
+    font-size: 14px;
+}
+
+QWidget#cameraPage QComboBox#cameraCombo::drop-down {
+    width: 30px;
+    border: 0;
+    background: transparent;
+}
+
+QWidget#cameraPage QLabel#cameraStatus {
+    min-height: 36px;
+    max-height: 36px;
+    border: 1px solid #CBD6DB;
+    border-radius: 6px;
+    background: #FFFFFF;
+    color: #168A6B;
+    font-size: 15px;
+}
+
+QWidget#cameraPage QPushButton#cameraToggleButton {
+    min-width: 78px;
+    min-height: 40px;
+    max-height: 40px;
+    border: 1px solid #079B72;
+    border-radius: 7px;
+    background: #FFFFFF;
+    color: #078A68;
+    font-size: 15px;
+}
+
+QWidget#cameraPage QPushButton#cameraToggleButton:checked {
+    background: #FFFFFF;
+    color: #078A68;
+}
+
+QWidget#cameraPage QLabel#cameraDeviceValue {
+    min-width: 108px;
+    color: #8997A0;
+    font-size: 13px;
+}
+
+QWidget#cameraPage QLabel#cameraHint,
+QWidget#cameraPage QLabel#cameraFocusHint {
+    color: #71818B;
+    font-size: 13px;
+}
+
+QWidget#cameraPage QWidget#cameraDivider {
+    background: #D9E1E4;
+}
+
+QWidget#cameraPage QSlider#parameterSlider {
+    min-height: 20px;
+}
+
+QWidget#cameraPage QSlider#parameterSlider::groove:horizontal {
+    height: 4px;
+    border-radius: 2px;
+    background: #DCE4E1;
+}
+
+QWidget#cameraPage QSlider#parameterSlider::sub-page:horizontal {
+    border-radius: 2px;
+    background: #279F7B;
+}
+
+QWidget#cameraPage QSlider#parameterSlider::handle:horizontal {
+    width: 18px;
+    height: 18px;
+    margin: -7px 0;
+    border: 1px solid #C7D2D1;
+    border-radius: 9px;
+    background: #FFFFFF;
+}
+
+QWidget#cameraPage QSlider#parameterSlider:disabled::groove:horizontal {
+    background: #E8ECEB;
+}
+
+QWidget#cameraPage QSlider#parameterSlider:disabled::sub-page:horizontal {
+    background: #E8ECEB;
+}
+
+/* Auto exposure owns the device value and makes the manual slider inactive. */
+QWidget#cameraPage QLabel#cameraDeviceValue[state="disabled"] {
+    color: #B0BBB7;
+}
+
+QWidget#cameraPage QSlider#parameterSlider:disabled {
+    opacity: 0.72;
+}
+
+/* Camera page refinement: compact instrument surfaces with a consistent
+   field rhythm. Scoped so the rest of the application keeps its baseline. */
+QWidget#cameraPage {
+    background-color: #F8FAF9;
+}
+
+QWidget#cameraPage QGroupBox#cameraCard {
+    background-color: #FFFFFF;
+    border: 1px solid #CFDCD8;
+    border-radius: 9px;
+    padding-top: 40px;
+}
+
+QWidget#cameraPage QGroupBox#cameraCard::title {
+    left: 20px;
+    top: 14px;
+    color: #172A34;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+QWidget#cameraPage QLabel#cameraFieldLabel {
+    color: #213841;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+QWidget#cameraPage QComboBox#cameraCombo {
+    min-height: 44px;
+    max-height: 44px;
+    padding: 0 32px 0 13px;
+    border-radius: 8px;
+    border: 1px solid #C9D8D3;
+    color: #203942;
+    background-color: #FFFFFF;
+}
+
+QWidget#cameraPage QComboBox#cameraCombo:hover,
+QWidget#cameraPage QComboBox#cameraCombo:focus {
+    border-color: #38A17A;
+    background-color: #FCFEFD;
+}
+
+QWidget#cameraPage QLabel#cameraStatus {
+    border-radius: 8px;
+    color: #128260;
+    border-color: #BFD9CD;
+    background-color: #FFFFFF;
+}
+
+QWidget#cameraPage QPushButton#cameraSecondaryButton,
+QWidget#cameraPage QPushButton#cameraPrimaryButton,
+QWidget#cameraPage QPushButton#cameraActionButton {
+    min-height: 46px;
+    max-height: 46px;
+    border-radius: 8px;
+}
+
+QWidget#cameraPage QPushButton#cameraPrimaryButton {
+    color: #087C5C;
+    border-color: #2C9B75;
+    background-color: #FFFFFF;
+}
+
+QWidget#cameraPage QPushButton#cameraPrimaryButton:hover,
+QWidget#cameraPage QPushButton#cameraSecondaryButton:hover,
+QWidget#cameraPage QPushButton#cameraActionButton:hover {
+    background-color: #F1FAF6;
+    border-color: #168B67;
+}
+
+QWidget#cameraPage QLabel#cameraPreview {
+    border-radius: 8px;
+    border: 1px solid #253032;
+}
+
+QWidget#cameraPage QSlider#parameterSlider {
+    min-height: 22px;
+}
+
+QWidget#cameraPage QSlider#parameterSlider::groove:horizontal {
+    height: 5px;
+    border-radius: 3px;
+    background-color: #DEE8E4;
+}
+
+QWidget#cameraPage QSlider#parameterSlider::sub-page:horizontal {
+    border-radius: 3px;
+    background-color: #2A9C76;
+}
+
+QWidget#cameraPage QSlider#parameterSlider::handle:horizontal {
+    width: 18px;
+    height: 18px;
+    margin: -7px 0;
+    border: 1px solid #C7D7D1;
+    border-radius: 9px;
+    background-color: #FFFFFF;
+}
+
+QWidget#cameraPage QLabel#cameraDeviceValue[state="disabled"] {
+    color: #AEBAB5;
+}
+
+QWidget#cameraPage QLabel#cameraHint,
+QWidget#cameraPage QLabel#cameraFocusHint,
+QWidget#cameraPage QLabel#cameraValue {
+    color: #70817B;
+}
+
+QWidget#cameraPage QLabel#cameraCaptureIcon {
+    background-color: #EEF5F1;
+    border-radius: 8px;
+}
+
+QWidget#cameraPage QComboBox#cameraCombo[toolbar="true"],
+QWidget#cameraPage QLabel#cameraStatus {
+    min-height: 50px;
+    max-height: 50px;
+}
+
+/* Camera slider treatment: a quiet neutral rail, green active travel, and
+   a low-contrast locked state when Auto Exposure owns the value. */
+QWidget#cameraPage QSlider#parameterSlider::groove:horizontal {
+    height: 5px;
+    border-radius: 3px;
+    background-color: #DCE4E1;
+}
+
+QWidget#cameraPage QSlider#parameterSlider::sub-page:horizontal {
+    border-radius: 3px;
+    background-color: #2A9C76;
+}
+
+QWidget#cameraPage QSlider#parameterSlider::add-page:horizontal {
+    border-radius: 3px;
+    background-color: #DCE4E1;
+}
+
+QWidget#cameraPage QSlider#parameterSlider::handle:horizontal {
+    width: 18px;
+    height: 18px;
+    margin: -7px 0;
+    border: 1px solid #C5D2CD;
+    border-radius: 9px;
+    background-color: #FFFFFF;
+}
+
+QWidget#cameraPage QSlider#parameterSlider:hover::handle:horizontal,
+QWidget#cameraPage QSlider#parameterSlider:focus::handle:horizontal {
+    border-color: #2A9C76;
+}
+
+QWidget#cameraPage QSlider#parameterSlider:disabled::groove:horizontal,
+QWidget#cameraPage QSlider#parameterSlider:disabled::sub-page:horizontal,
+QWidget#cameraPage QSlider#parameterSlider:disabled::add-page:horizontal {
+    background-color: #E6EBE9;
+}
+
+QWidget#cameraPage QSlider#parameterSlider:disabled::handle:horizontal {
+    border-color: #D8E0DD;
+    background-color: #F7F9F8;
+}
+
+QWidget#cameraPage QLabel#cameraDeviceValue[state="active"] {
+    color: #71817B;
+}
+
+QWidget#cameraPage QSlider#parameterSlider {
+    background-color: transparent;
+    min-height: 30px;
+    max-height: 30px;
+}
+
+QWidget#cameraPage QSlider#parameterSlider::groove:horizontal,
+QWidget#cameraPage QSlider#parameterSlider::add-page:horizontal {
+    height: 4px;
+    border: none;
+    border-radius: 2px;
+    background-color: #D4DDDA;
+}
+
+QWidget#cameraPage QSlider#parameterSlider:disabled::groove:horizontal,
+QWidget#cameraPage QSlider#parameterSlider:disabled::add-page:horizontal {
+    background-color: #E8EDEC;
+}
+
+QWidget#cameraPage QLabel#cameraDeviceValue {
+    min-width: 28px;
+    max-width: 28px;
+    padding: 0;
+}
+
+QWidget#cameraPage QSlider#parameterSlider::groove:horizontal {
+    height: 4px;
+    border-radius: 2px;
+    background-color: transparent;
+}
+
+QWidget#cameraPage QSlider#parameterSlider::sub-page:horizontal {
+    height: 4px;
+    border-radius: 2px;
+    background-color: #239A73;
+}
+
+QWidget#cameraPage QSlider#parameterSlider::add-page:horizontal {
+    height: 4px;
+    border-radius: 2px;
+    background-color: #D4DDDA;
+}
+
+QWidget#cameraPage QSlider#parameterSlider:disabled::groove:horizontal,
+QWidget#cameraPage QSlider#parameterSlider:disabled::sub-page:horizontal,
+QWidget#cameraPage QSlider#parameterSlider:disabled::add-page:horizontal {
+    background-color: #E3E8E6;
+}
