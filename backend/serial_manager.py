@@ -1,4 +1,12 @@
-"""Threaded, UI-independent Multiboard2 serial sensor backend."""
+"""Threaded, UI-independent Multiboard2 serial backend.
+
+The connection object owns one UART reader thread, serializes writes, parses
+replies, publishes thread-safe ``BackendEvent`` objects, and performs the sensor
+initialization/streaming state machine.
+
+See ``docs/DEVELOPER_GUIDE.md`` for command/reply framing and
+``docs/DEVELOPER_GUIDE.md`` for the sensor data path.
+"""
 
 from __future__ import annotations
 
@@ -22,17 +30,8 @@ from backend.protocol import (
     encode_command,
     parse_reply,
 )
-from backend.flow_filter import FlowSignalFilter
-
-
 BAUD_RATE = 115_200
 MAX_FLOW_INTEGRATION_GAP_SECONDS = 2.0
-# Keep V14's median/deadband protection, but respond faster so short flow
-# changes are not visibly flattened by an overly slow EMA.
-FLOW_FILTER_EMA_TIME_CONSTANT_SECONDS = 0.35
-FLOW_FILTER_ZERO_DEADBAND_UL_MIN = 75.0
-FLOW_FILTER_CONFIRMATION_SAMPLES = 2
-
 # These states mirror the useful part of FluidicStudio's connection flow:
 # connect the board, identify it, configure the selected sensor, then stream.
 DISCONNECTED = "disconnected"
@@ -56,6 +55,7 @@ class SensorSample:
     unit: str
     accumulated_volume_ul: float | None
     raw_line: str
+    raw_value_ml_min: float | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +67,18 @@ class BackendEvent:
     sample: SensorSample | None = None
 
 
+@dataclass(frozen=True)
+class CommandSequenceResult:
+    """Result of one acknowledged serial transaction."""
+
+    success: bool
+    commands: tuple[str, ...]
+    failed_command: str | None = None
+    rollback_command: str | None = None
+    rollback_succeeded: bool | None = None
+    message: str = ""
+
+
 class MultiboardConnection:
     """Own one COM port and publish parsed events through a thread-safe queue."""
 
@@ -74,13 +86,15 @@ class MultiboardConnection:
         self,
         port: str,
         connection: Any | None = None,
-        *,
-        filter_enabled: bool = True,
     ) -> None:
         self.port = port
         self.connection = connection
-        self.filter_enabled = bool(filter_enabled)
         self.events: queue.Queue[BackendEvent] = queue.Queue()
+        # Optional read-only event subscribers provide fan-out for compact
+        # Workspace views while preserving the original drain_events() queue.
+        # Callbacks run on the producer thread and therefore must stay fast.
+        self._event_subscribers = set()
+        self._event_subscribers_lock = threading.Lock()
         self.active_sensor_id: str | None = None
         self.firmware = "Unknown"
         self.state = DISCONNECTED
@@ -89,16 +103,23 @@ class MultiboardConnection:
         self._opened_at = monotonic()
         self._last_flow_time: float | None = None
         self._last_flow_value: float | None = None
-        self._flow_filter = FlowSignalFilter(
-            ema_time_constant_seconds=FLOW_FILTER_EMA_TIME_CONSTANT_SECONDS,
-            zero_deadband_ul_min=FLOW_FILTER_ZERO_DEADBAND_UL_MIN,
-            confirmation_samples=FLOW_FILTER_CONFIRMATION_SAMPLES,
-        )
         self._volume_ul = 0.0
         self._stop_event = threading.Event()
         self._write_lock = threading.Lock()
+        # Keep complete acknowledged command transactions atomic. Pump and
+        # sensor commands share one UART, so another write must not replace
+        # ``last_command`` while a caller is waiting for its OK/FAIL reply.
+        self._command_lock = threading.RLock()
+        self._ack_lock = threading.Lock()
+        self._pending_ack_command: str | None = None
+        self._pending_ack_event: threading.Event | None = None
+        self._pending_ack_succeeded = False
+        self._firmware_event = threading.Event()
+        self._sample_condition = threading.Condition()
+        self._measurement_count = 0
+        self._initialization_cancel = threading.Event()
+        self._initializer: threading.Thread | None = None
         self._reader: threading.Thread | None = None
-
     @property
     def is_open(self) -> bool:
         return bool(self.connection is not None and getattr(self.connection, "is_open", False))
@@ -142,21 +163,201 @@ class MultiboardConnection:
             reset_input()
         self._reader.start()
         self._set_state(HANDSHAKE, "Serial connection open; waiting for firmware identification")
-        self.events.put(BackendEvent("connected", self.port))
+        self._publish_event(BackendEvent("connected", self.port))
 
     def send(self, command: str) -> None:
+        # Command syntax belongs in backend.protocol; transport/framing and
+        # acknowledgement behavior are documented in docs/DEVELOPER_GUIDE.md.
         if not self.is_open:
             raise RuntimeError(f"{self.port} is not open")
         payload = encode_command(command)
-        with self._write_lock:
-            self.connection.write(payload)
-            self.connection.flush()
-        self.last_command = command.strip()
-        self.events.put(BackendEvent("command", self.port, self.last_command))
+        with self._command_lock:
+            with self._write_lock:
+                self.last_command = command.strip()
+                self.connection.write(payload)
+                self.connection.flush()
+            self._publish_event(BackendEvent("command", self.port, self.last_command))
+
+    def send_and_wait_for_ack(self, command: str, timeout: float = 1.0) -> bool:
+        """Send one command and require the board's ``OK`` response."""
+
+        clean = command.strip()
+        with self._command_lock:
+            event = threading.Event()
+            with self._ack_lock:
+                if self._pending_ack_event is not None:
+                    raise RuntimeError("Another acknowledged command is already pending")
+                self._pending_ack_command = clean
+                self._pending_ack_event = event
+                self._pending_ack_succeeded = False
+            try:
+                self.send(clean)
+                if not event.wait(max(0.0, float(timeout))):
+                    return False
+                with self._ack_lock:
+                    return self._pending_ack_succeeded
+            finally:
+                with self._ack_lock:
+                    if self._pending_ack_event is event:
+                        self._pending_ack_command = None
+                        self._pending_ack_event = None
+                        self._pending_ack_succeeded = False
+
+    def send_sequence(
+        self,
+        commands,
+        *,
+        timeout: float = 1.0,
+        rollback_command: str | None = None,
+    ) -> CommandSequenceResult:
+        """Send a complete acknowledged transaction without interleaving writes.
+
+        Pump startup uses this boundary so another sensor/pump command cannot
+        replace ``last_command`` between the individual ACKs.  A rollback is
+        deliberately caller-supplied; pump code uses only the affected
+        channel's OFF command rather than a global POFF.
+        """
+
+        sequence = tuple(str(command).strip() for command in commands if str(command).strip())
+        if not sequence:
+            return CommandSequenceResult(True, ())
+
+        with self._command_lock:
+            for command in sequence:
+                try:
+                    acknowledged = self.send_and_wait_for_ack(command, timeout=timeout)
+                except Exception as exc:
+                    acknowledged = False
+                    failure_message = f"{command} failed: {exc}"
+                else:
+                    failure_message = f"{command} was not acknowledged"
+                if acknowledged:
+                    continue
+
+                rollback_succeeded = None
+                clean_rollback = rollback_command.strip() if rollback_command else None
+                if clean_rollback:
+                    try:
+                        rollback_succeeded = self.send_and_wait_for_ack(
+                            clean_rollback, timeout=timeout
+                        )
+                    except Exception:
+                        rollback_succeeded = False
+                return CommandSequenceResult(
+                    success=False,
+                    commands=sequence,
+                    failed_command=command,
+                    rollback_command=clean_rollback,
+                    rollback_succeeded=rollback_succeeded,
+                    message=failure_message,
+                )
+
+        return CommandSequenceResult(True, sequence, message="Transaction acknowledged")
 
     def request_firmware(self) -> None:
         self._set_state(HANDSHAKE, "Requesting Multiboard firmware")
         self.send("V")
+
+    def request_firmware_and_wait(self, timeout: float = 2.0) -> bool:
+        """Request identification and wait for either Ready or version text."""
+
+        self._firmware_event.clear()
+        self.request_firmware()
+        return self._firmware_event.wait(max(0.0, float(timeout)))
+
+    def attach_initializer(self, thread: threading.Thread) -> None:
+        self._initializer = thread
+
+    def _wait_for_measurements(self, starting_count: int, required: int, timeout: float) -> bool:
+        deadline = monotonic() + max(0.0, float(timeout))
+        with self._sample_condition:
+            while self._measurement_count - starting_count < required:
+                remaining = deadline - monotonic()
+                if remaining <= 0 or self._initialization_cancel.is_set():
+                    return False
+                self._sample_condition.wait(min(remaining, 0.25))
+            return True
+
+    def initialize_liquid_flow(
+        self,
+        *,
+        retry_delay_seconds: float = 2.0,
+        sample_timeout_seconds: float = 3.0,
+        max_attempts: int | None = None,
+        monitor_stream: bool = True,
+    ) -> bool:
+        """Synchronize and detect the flow sensor without blocking Qt.
+
+        A sensor is considered present only after two valid finite samples.
+        Their numeric value is irrelevant: zero and negative values are valid.
+        """
+
+        self._initialization_cancel.clear()
+        attempt = 0
+        while self.is_open and not self._initialization_cancel.is_set():
+            attempt += 1
+            self._set_state(HANDSHAKE, "Checking liquid-flow sensor…")
+            try:
+                if not self.request_firmware_and_wait(timeout=2.0):
+                    raise RuntimeError("board identification timed out")
+                if not self.send_and_wait_for_ack("DFOFF", timeout=1.5):
+                    raise RuntimeError("DFOFF was not acknowledged")
+                if not self.send_and_wait_for_ack(
+                    CALIBRATION_COMMANDS[Calibration.WATER], timeout=1.5
+                ):
+                    raise RuntimeError("L0 calibration was not acknowledged")
+
+                self.active_sensor_id = "liquid_flow"
+                self._reset_integration()
+                with self._sample_condition:
+                    starting_count = self._measurement_count
+                self._set_state(STREAM_REQUESTED, "Requesting liquid-flow samples…")
+                if not self.send_and_wait_for_ack(
+                    SENSORS["liquid_flow"].start_command, timeout=1.5
+                ):
+                    raise RuntimeError("DFON was not acknowledged")
+                if self._wait_for_measurements(
+                    starting_count, required=2, timeout=sample_timeout_seconds
+                ):
+                    self._set_state(STREAMING, "Liquid-flow sensor connected")
+                    if not monitor_stream:
+                        return True
+                    # Stay alive as a lightweight watchdog. If valid lines
+                    # stop for five seconds, run the complete acknowledged
+                    # DFOFF/L0/DFON sequence again instead of retrying DFON
+                    # once and waiting forever.
+                    with self._sample_condition:
+                        observed_count = self._measurement_count
+                    while self.is_open and not self._initialization_cancel.is_set():
+                        with self._sample_condition:
+                            self._sample_condition.wait(timeout=5.0)
+                            current_count = self._measurement_count
+                        if current_count != observed_count:
+                            observed_count = current_count
+                            continue
+                        self._publish_event(
+                            BackendEvent(
+                                "sensor_retry",
+                                self.port,
+                                "flow stream paused",
+                            )
+                        )
+                        break
+                    if self._initialization_cancel.is_set() or not self.is_open:
+                        return True
+                    continue
+                raise RuntimeError("no valid flow samples received")
+            except Exception as exc:
+                if self._initialization_cancel.is_set() or not self.is_open:
+                    return False
+                self.active_sensor_id = None
+                self._publish_event(BackendEvent("sensor_retry", self.port, str(exc)))
+                self._set_state(READY, "Sensor not detected — retrying…")
+
+            if max_attempts is not None and attempt >= max(1, int(max_attempts)):
+                return False
+            self._initialization_cancel.wait(max(0.1, float(retry_delay_seconds)))
+        return False
 
     def start_sensor(
         self,
@@ -208,7 +409,30 @@ class MultiboardConnection:
         self._volume_ul = 0.0
         self._last_flow_time = None
         self._last_flow_value = None
-        self._flow_filter.reset()
+
+    def subscribe_events(self, callback) -> None:
+        """Receive a read-only copy of future backend events without draining them."""
+        if not callable(callback):
+            raise TypeError("event subscriber must be callable")
+        with self._event_subscribers_lock:
+            self._event_subscribers.add(callback)
+
+    def unsubscribe_events(self, callback) -> None:
+        with self._event_subscribers_lock:
+            self._event_subscribers.discard(callback)
+
+    def _publish_event(self, event: BackendEvent) -> None:
+        """Publish to the legacy queue and to non-consuming subscribers."""
+        self.events.put(event)
+        with self._event_subscribers_lock:
+            subscribers = tuple(self._event_subscribers)
+        for callback in subscribers:
+            try:
+                callback(event)
+            except Exception:
+                # Observers are diagnostics/view consumers and must never be
+                # able to kill the serial reader or alter transport behavior.
+                continue
 
     def drain_events(self, limit: int = 1000) -> list[BackendEvent]:
         drained = []
@@ -235,10 +459,10 @@ class MultiboardConnection:
         except BaseException as exc:
             if not self._stop_event.is_set():
                 self._set_state(ERROR, f"Serial reader failed: {exc}")
-                self.events.put(BackendEvent("error", self.port, str(exc)))
+                self._publish_event(BackendEvent("error", self.port, str(exc)))
         finally:
             if buffer and not self._stop_event.is_set():
-                self.events.put(
+                self._publish_event(
                     BackendEvent("unknown", self.port, buffer.decode("utf-8", errors="replace"))
                 )
 
@@ -247,14 +471,28 @@ class MultiboardConnection:
         # Keep the original line visible to the UI/diagnostic log.  Parsing is
         # deliberately separate, so an unfamiliar firmware response cannot
         # silently look like a dead serial connection.
-        self.events.put(BackendEvent("raw", self.port, line))
+        self._publish_event(BackendEvent("raw", self.port, line))
         reply = parse_reply(line, self.active_sensor_id)
         if reply.kind == "firmware":
             self.firmware = reply.message
+            self._firmware_event.set()
             self._set_state(READY, f"Firmware identified: {reply.message}")
+        elif reply.kind == "boot":
+            self._firmware_event.set()
         elif reply.kind == "error":
+            with self._ack_lock:
+                if self._pending_ack_event is not None:
+                    self._pending_ack_succeeded = False
+                    self._pending_ack_event.set()
             self._set_state(ERROR, f"Board rejected command: {reply.message}")
         elif reply.kind == "ack":
+            with self._ack_lock:
+                if (
+                    self._pending_ack_event is not None
+                    and self._pending_ack_command == self.last_command
+                ):
+                    self._pending_ack_succeeded = True
+                    self._pending_ack_event.set()
             if self.last_command in {"L0", "L1"}:
                 self._set_state(READY, f"Calibration acknowledged ({self.last_command})")
             elif self.last_command in {definition.start_command for definition in SENSORS.values()}:
@@ -262,11 +500,14 @@ class MultiboardConnection:
             elif self.last_command in {definition.stop_command for definition in SENSORS.values()}:
                 self._set_state(READY, "Sensor stream stopped")
         if reply.measurement is None:
-            self.events.put(BackendEvent(reply.kind, self.port, reply.message, reply))
+            self._publish_event(BackendEvent(reply.kind, self.port, reply.message, reply))
             return
 
         now_monotonic = monotonic()
         measurement = reply.measurement
+        with self._sample_condition:
+            self._measurement_count += 1
+            self._sample_condition.notify_all()
         volume = None
         if measurement.sensor_id == "liquid_flow":
             delta_seconds = None
@@ -277,33 +518,16 @@ class MultiboardConnection:
                 # the previous flow continued. Start a new segment instead of
                 # inventing volume across missing data.
                 if delta_seconds <= MAX_FLOW_INTEGRATION_GAP_SECONDS:
-                    filtered_value = self._processed_flow_value(
-                        measurement.value, delta_seconds
-                    )
                     self._volume_ul += (
-                        (self._last_flow_value + filtered_value) / 2.0
+                        (self._last_flow_value + measurement.value) / 2.0
                         * delta_seconds
                         / 60.0
                     )
-                else:
-                    self._flow_filter.reset()
-                    filtered_value = self._processed_flow_value(measurement.value, None)
-            else:
-                filtered_value = self._processed_flow_value(measurement.value, None)
+            # protocol.parse_reply() performed the single unit conversion
+            # (firmware mL/min -> UI/CSV µL/min). Keep that value unchanged.
             self._last_flow_time = now_monotonic
-            self._last_flow_value = filtered_value
+            self._last_flow_value = measurement.value
             volume = self._volume_ul
-
-            # The sample passed downstream is the exact same signed signal used
-            # by integration and CSV logging. This keeps Bartels-style reverse
-            # flow visible and prevents graph/CSV/volume divergence.
-            measurement = measurement.__class__(
-                measurement.sensor_id,
-                filtered_value,
-                measurement.unit,
-                measurement.raw_line,
-                measurement.raw_value_ml_min,
-            )
 
         sample = SensorSample(
             timestamp=datetime.now(timezone.utc),
@@ -314,41 +538,47 @@ class MultiboardConnection:
             unit=measurement.unit,
             accumulated_volume_ul=volume,
             raw_line=line,
+            raw_value_ml_min=measurement.raw_value_ml_min,
         )
         self._set_state(STREAMING, f"{measurement.sensor_id} measurement received")
-        self.events.put(BackendEvent("measurement", self.port, reply=reply, sample=sample))
+        self._publish_event(BackendEvent("measurement", self.port, reply=reply, sample=sample))
 
     def _set_state(self, state: str, message: str = "") -> None:
         self.state = state
-        self.events.put(BackendEvent("state", self.port, message or state))
-
-    def _processed_flow_value(self, raw_value: float, delta_seconds: float | None) -> float:
-        """Return either the untouched normalized reading or the display signal.
-
-        The raw mode is deliberately selected after protocol parsing, so it
-        still uses the same unit conversion, validation, timestamps, graph,
-        CSV, and integration paths as filtered mode.
-        """
-        if not self.filter_enabled:
-            return float(raw_value)
-        return self._flow_filter.update(raw_value, delta_seconds)
+        self._publish_event(BackendEvent("state", self.port, message or state))
 
     def _reset_integration(self, keep_total: bool = False) -> None:
         if not keep_total:
             self._volume_ul = 0.0
         self._last_flow_time = None
         self._last_flow_value = None
-        self._flow_filter.reset()
 
-    def close(self) -> None:
+    def close(self) -> bool:
         if not self.connection:
-            return
+            return True
+        self._initialization_cancel.set()
+        with self._sample_condition:
+            self._sample_condition.notify_all()
         self._set_state(CLOSING, "Closing Multiboard connection")
         try:
+            # Do not discard the connection until the board confirms the
+            # global pump shutdown.  This prevents a failed write from being
+            # reported as a safe disconnect.
+            pumps_stopped = self.send_and_wait_for_ack("POFF", timeout=1.0)
+            if not pumps_stopped:
+                pumps_stopped = self.send_and_wait_for_ack("POFF", timeout=1.0)
+            if not pumps_stopped:
+                message = "POFF was not acknowledged; connection kept open"
+                self._publish_event(BackendEvent("error", self.port, message))
+                return False
             self.stop_sensor()
         except Exception as exc:
-            self.events.put(BackendEvent("error", self.port, f"Stop failed: {exc}"))
+            self._publish_event(BackendEvent("error", self.port, f"Stop failed: {exc}"))
+            return False
         self._stop_event.set()
+        initializer = self._initializer
+        if initializer is not None and initializer is not threading.current_thread():
+            initializer.join(timeout=2.0)
         if self._reader is not None:
             self._reader.join(timeout=1.0)
         try:
@@ -356,28 +586,18 @@ class MultiboardConnection:
                 self.connection.close()
         finally:
             self.state = DISCONNECTED
-            self.events.put(BackendEvent("disconnected", self.port))
+            self._publish_event(BackendEvent("disconnected", self.port))
+        return True
 
 
 def open_and_start_liquid_flow(
     port: str,
     boot_delay_seconds: float = 1.0,
-    *,
-    filter_enabled: bool = True,
 ) -> MultiboardConnection:
-    """Convenience handshake used by the current liquid-flow UI MVP."""
+    """Open the board and start an unfiltered liquid-flow stream."""
 
-    board = MultiboardConnection(port, filter_enabled=filter_enabled)
+    board = MultiboardConnection(port)
     board.open()
     sleep(max(0.0, boot_delay_seconds))
-    board.request_firmware()
-    # Bartels' UI gives the board time to answer V before changing the
-    # calibration/measurement mode.  Keep these writes separate; sending
-    # L0/DFON back-to-back is the intermittent startup failure seen in V10.
-    sleep(1.0)
-    board.start_sensor(
-        "liquid_flow",
-        Calibration.WATER,
-        calibration_delay_seconds=0.5,
-    )
+    board.initialize_liquid_flow(max_attempts=3, monitor_stream=False)
     return board

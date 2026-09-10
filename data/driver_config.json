@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "drivers": {
+    "ch1_4": "highdriver4",
+    "ch5": "lowdriver",
+    "ch6": "mp_driver"
+  }
+}

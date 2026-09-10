@@ -89,7 +89,8 @@ QWidget#homePage,
 QWidget#pumpsPage,
 QWidget#valvesPage,
 QWidget#sensorsPage,
-QWidget#cameraPage {
+QWidget#cameraPage,
+QWidget#wavePage {
     background-color: #F8FAF9;
 }
 
@@ -329,7 +330,7 @@ QComboBox#cameraCombo QAbstractItemView {
     selection-color: #29332F;
 }
 
-QLabel#cameraStatus {
+QPushButton#cameraStatus {
     color: #368A6C;
     background-color: #FFFFFF;
     border: 1px solid #D5DFDA;
@@ -337,6 +338,16 @@ QLabel#cameraStatus {
     padding: 0 10px;
     font-size: 13px;
     font-weight: 500;
+}
+
+QPushButton#cameraStatus:hover {
+    background-color: #F3FAF7;
+    border-color: #85C4AA;
+}
+
+QPushButton#cameraStatus:disabled {
+    color: #6C7B75;
+    background-color: #F7F9F8;
 }
 
 QPushButton#cameraSecondaryButton,
@@ -405,6 +416,19 @@ QLabel#cameraPreview {
     border: 1px solid #202625;
     border-radius: 6px;
     font-size: 15px;
+}
+
+QLabel#cameraFpsOverlay {
+    background-color: rgba(18, 25, 27, 190);
+    color: #FFFFFF;
+    border: 1px solid rgba(255, 255, 255, 45);
+    border-radius: 5px;
+    padding: 5px 9px;
+    margin: 10px;
+    min-width: 58px;
+    min-height: 26px;
+    font-size: 12px;
+    font-weight: 700;
 }
 
 QLabel#cameraHint,
@@ -777,18 +801,13 @@ QLabel#sensorSectionTitle {
     font-weight: 700;
 }
 
-QLabel#sensorAxisTitle {
-    color: #162535;
-    font-size: 16px;
-    font-weight: 500;
-}
-
 QLabel#sensorLegendText {
     color: #324257;
     font-size: 16px;
     font-weight: 400;
 }
 
+QPushButton#sensorPauseButton,
 QPushButton#sensorFitButton,
 QPushButton#sensorAutoScaleButton {
     min-height: 28px;
@@ -803,12 +822,14 @@ QPushButton#sensorAutoScaleButton {
     min-height: 40px;
 }
 
+QPushButton#sensorPauseButton:hover,
 QPushButton#sensorFitButton:hover,
 QPushButton#sensorAutoScaleButton:hover {
     background-color: #F0F8F4;
     border-color: #58A982;
 }
 
+QPushButton#sensorPauseButton:pressed,
 QPushButton#sensorFitButton:pressed,
 QPushButton#sensorAutoScaleButton:pressed {
     background-color: #DDEFE6;
@@ -968,30 +989,34 @@ QWidget#sensorRow:hover {
     background-color: #F8FBFA;
 }
 
-QWidget#sensorRow:disabled {
-    background-color: #F6F8F8;
+QWidget#sensorRow[selectionLimited="true"] {
+    background-color: #FFFFFF;
 }
 
-QWidget#sensorRow:disabled QLabel#sensorName,
-QWidget#sensorRow:disabled QLabel#sensorValue {
+QWidget#sensorRow[selectionLimited="true"]:hover {
+    background-color: #FFFFFF;
+}
+
+QWidget#sensorRow[selectionLimited="true"] QLabel#sensorName,
+QWidget#sensorRow[selectionLimited="true"] QLabel#sensorValue {
     color: #A7B0B5;
 }
 
-/* A measurement that is available to click remains readable even while
-   another board is being compared. Only unavailable measurements are muted. */
-QWidget#sensorRow[available="true"] QLabel#sensorName,
-QWidget#sensorRow[available="true"] QLabel#sensorValue {
-    color: #162535;
+/* Detection does not control chart-selection colors. Every selectable or
+   selected measurement stays black; only selection-limited rows are muted. */
+QWidget#sensorRow[selectionLimited="false"] QLabel#sensorName,
+QWidget#sensorRow[selectionLimited="false"] QLabel#sensorValue {
+    color: #000000;
 }
 
 QLabel#sensorName {
-    color: #162535;
+    color: #000000;
     font-size: 15px;
     font-weight: 400;
 }
 
 QLabel#sensorValue {
-    color: #263950;
+    color: #000000;
     font-size: 13px;
     font-weight: 400;
 }
@@ -1285,7 +1310,7 @@ QWidget#cameraPage QComboBox#cameraCombo QAbstractItemView {
     outline: none;
 }
 
-QWidget#cameraPage QLabel#cameraStatus {
+QWidget#cameraPage QPushButton#cameraStatus {
     background-color: #FFFFFF;
     color: #16865E;
     border: 1px solid #D3DDE0;
@@ -1421,6 +1446,29 @@ QComboBox#waveformBox {
     max-height: 38px;
     border-radius: 8px;
 }
+
+/* PUMP_UI_ALIGNMENT_FIX_20260810
+   Keep the native spinbox frame inside the row.  The previous wrapper
+   shifted it upward and clipped its lower border on Highdriver4 cards. */
+QSpinBox#parameterSpinBox {
+    min-height: 38px;
+    max-height: 38px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+    border: 1px solid #D6E0DB;
+}
+
+QSpinBox#parameterSpinBox:hover {
+    border: 1px solid #8BC8AF;
+}
+
+QSpinBox#parameterSpinBox:focus {
+    border: 1px solid #58A982;
+}
+
+QSpinBox#parameterSpinBox:disabled {
+    border: 1px solid #E1E7E4;
+}
 /* V25_CAMERA_REFERENCE_CONTROLS -- uniquely scoped camera refinements.
    Keep this block at the end so it wins over the older camera rules without
    changing the shell, sidebar, Sensors page, or shared widget styling. */
@@ -1489,7 +1537,7 @@ QWidget#cameraPage QComboBox#cameraCombo::drop-down {
     background: transparent;
 }
 
-QWidget#cameraPage QLabel#cameraStatus {
+QWidget#cameraPage QPushButton#cameraStatus {
     min-height: 36px;
     max-height: 36px;
     border: 1px solid #CBD6DB;
@@ -1615,7 +1663,7 @@ QWidget#cameraPage QComboBox#cameraCombo:focus {
     background-color: #FCFEFD;
 }
 
-QWidget#cameraPage QLabel#cameraStatus {
+QWidget#cameraPage QPushButton#cameraStatus {
     border-radius: 8px;
     color: #128260;
     border-color: #BFD9CD;
@@ -1688,7 +1736,7 @@ QWidget#cameraPage QLabel#cameraCaptureIcon {
 }
 
 QWidget#cameraPage QComboBox#cameraCombo[toolbar="true"],
-QWidget#cameraPage QLabel#cameraStatus {
+QWidget#cameraPage QPushButton#cameraStatus {
     min-height: 50px;
     max-height: 50px;
 }
@@ -1787,4 +1835,1285 @@ QWidget#cameraPage QSlider#parameterSlider:disabled::groove:horizontal,
 QWidget#cameraPage QSlider#parameterSlider:disabled::sub-page:horizontal,
 QWidget#cameraPage QSlider#parameterSlider:disabled::add-page:horizontal {
     background-color: #E3E8E6;
+}
+
+/* Pump amplitude controls look disabled while stopped, but remain editable. */
+QSpinBox#parameterSpinBox[pumpStopped="true"] {
+    background-color: #F1F4F2;
+    color: #9BA5A0;
+    border-color: #E1E7E4;
+}
+
+QSlider#parameterSlider[pumpStopped="true"]::groove:horizontal {
+    background-color: #E5EAE7;
+}
+
+QSlider#parameterSlider[pumpStopped="true"]::sub-page:horizontal {
+    background-color: #BFCBC5;
+}
+
+QSlider#parameterSlider[pumpStopped="true"]::add-page:horizontal {
+    background-color: #E5EAE7;
+}
+
+QSlider#parameterSlider[pumpStopped="true"]::handle:horizontal {
+    background-color: #BFCBC5;
+}
+
+
+/* WAVE_PAGE_MVP_20260819 -------------------------------------------------- */
+QWidget#wavePage {
+    background-color: #F8FAF9;
+}
+
+QWidget#wavePage QFrame#waveLibraryCard,
+QWidget#wavePage QFrame#waveCard {
+    background-color: #FFFFFF;
+    border: 1px solid #D9E2DD;
+    border-radius: 8px;
+}
+
+QWidget#wavePage QLabel#waveSectionTitle {
+    color: #202B26;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+QWidget#wavePage QLabel#waveInlineLabel,
+QWidget#wavePage QLabel#waveFieldLabel {
+    color: #2D3933;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+QWidget#wavePage QLabel#waveHelperText,
+QWidget#wavePage QLabel#waveTableNote,
+QWidget#wavePage QLabel#wavePreviewContext {
+    color: #69756F;
+    font-size: 13px;
+    font-weight: 400;
+}
+
+QWidget#wavePage QLabel#wavePreviewContext {
+    color: #34413B;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+QWidget#wavePage QLineEdit#waveInput,
+QWidget#wavePage QLineEdit#waveReadOnlyInput,
+QWidget#wavePage QSpinBox#waveSpin,
+QWidget#wavePage QDoubleSpinBox#waveSpin,
+QWidget#wavePage QComboBox#waveCombo,
+QWidget#wavePage QComboBox#waveSavedCombo {
+    background-color: #FFFFFF;
+    color: #29332F;
+    border: 1px solid #D3DDD8;
+    border-radius: 6px;
+    padding: 0 11px;
+    font-size: 14px;
+    font-weight: 400;
+    selection-background-color: #E7F4EE;
+    selection-color: #202B26;
+}
+
+QWidget#wavePage QLineEdit#waveInput:hover,
+QWidget#wavePage QSpinBox#waveSpin:hover,
+QWidget#wavePage QDoubleSpinBox#waveSpin:hover,
+QWidget#wavePage QComboBox#waveCombo:hover,
+QWidget#wavePage QComboBox#waveSavedCombo:hover,
+QWidget#wavePage QLineEdit#waveInput:focus,
+QWidget#wavePage QSpinBox#waveSpin:focus,
+QWidget#wavePage QDoubleSpinBox#waveSpin:focus,
+QWidget#wavePage QComboBox#waveCombo:focus,
+QWidget#wavePage QComboBox#waveSavedCombo:focus {
+    border-color: #5EAD8A;
+}
+
+QWidget#wavePage QLineEdit#waveReadOnlyInput {
+    background-color: #F2F5F3;
+    color: #58655F;
+    border-color: #DEE5E1;
+}
+
+QWidget#wavePage QComboBox#waveCombo::drop-down,
+QWidget#wavePage QComboBox#waveSavedCombo::drop-down {
+    width: 30px;
+    border: none;
+    background: transparent;
+}
+
+QWidget#wavePage QComboBox#waveCombo QAbstractItemView,
+QWidget#wavePage QComboBox#waveSavedCombo QAbstractItemView {
+    background-color: #FFFFFF;
+    color: #29332F;
+    border: 1px solid #D3DDD8;
+    border-radius: 6px;
+    padding: 5px;
+    outline: none;
+    selection-background-color: #E7F4EE;
+    selection-color: #202B26;
+}
+
+QWidget#wavePage QSpinBox#waveSpin,
+QWidget#wavePage QDoubleSpinBox#waveSpin {
+    padding-right: 26px;
+}
+
+QWidget#wavePage QSpinBox#waveSpin::up-button,
+QWidget#wavePage QSpinBox#waveSpin::down-button,
+QWidget#wavePage QDoubleSpinBox#waveSpin::up-button,
+QWidget#wavePage QDoubleSpinBox#waveSpin::down-button {
+    width: 22px;
+    border: none;
+    background: transparent;
+}
+
+QWidget#wavePage QPushButton#waveLibraryButton {
+    background-color: #FFFFFF;
+    color: #368A6C;
+    border: 1px solid #89C5AC;
+    border-radius: 6px;
+    padding: 0 15px;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+QWidget#wavePage QPushButton#waveLibraryButton:hover {
+    background-color: #F4FAF7;
+    border-color: #59A982;
+}
+
+QWidget#wavePage QPushButton#waveDangerButton,
+QWidget#wavePage QPushButton#waveStopButton {
+    background-color: #FFFFFF;
+    color: #D94A42;
+    border: 1px solid #EF8C87;
+    border-radius: 6px;
+    padding: 0 15px;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+QWidget#wavePage QPushButton#waveDangerButton:hover,
+QWidget#wavePage QPushButton#waveStopButton:hover {
+    background-color: #FFF6F5;
+    border-color: #E16B64;
+}
+
+QWidget#wavePage QPushButton#wavePrimaryButton {
+    background-color: #14936A;
+    color: #FFFFFF;
+    border: 1px solid #14936A;
+    border-radius: 6px;
+    padding: 0 18px;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+QWidget#wavePage QPushButton#wavePrimaryButton:hover {
+    background-color: #10865F;
+    border-color: #10865F;
+}
+
+QWidget#wavePage QPushButton#wavePrimaryButton:pressed {
+    background-color: #0D7755;
+    border-color: #0D7755;
+}
+
+QWidget#wavePage QPushButton#wavePrimaryButton:disabled,
+QWidget#wavePage QPushButton#waveLibraryButton:disabled,
+QWidget#wavePage QPushButton#waveDangerButton:disabled,
+QWidget#wavePage QPushButton#waveStopButton:disabled {
+    background-color: #F1F3F2;
+    color: #A0AAA5;
+    border-color: #E1E6E3;
+}
+
+QWidget#wavePage QFrame#waveDivider {
+    color: #E0E6E3;
+    background-color: #E0E6E3;
+    border: none;
+    max-height: 1px;
+}
+
+QWidget#wavePage QLabel#waveCompatibilityBadge {
+    background-color: #F3F6F4;
+    color: #68736E;
+    border: none;
+    border-radius: 6px;
+    padding: 9px 12px;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+QWidget#wavePage QLabel#waveCompatibilityBadge[state="valid"] {
+    background-color: #EEF8F3;
+    color: #258463;
+}
+
+QWidget#wavePage QLabel#waveCompatibilityBadge[state="invalid"] {
+    background-color: #FFF1F0;
+    color: #C74C45;
+}
+
+QWidget#wavePage QLabel#waveCompatibilityBadge[state="neutral"] {
+    background-color: #F3F6F4;
+    color: #68736E;
+}
+
+QWidget#wavePage QTableView#waveStepsTable {
+    background-color: #FFFFFF;
+    alternate-background-color: #FFFFFF;
+    color: #34413B;
+    border: 1px solid #DCE4E0;
+    border-radius: 5px;
+    gridline-color: #E3E9E6;
+    font-size: 13px;
+    selection-background-color: #FFFFFF;
+    selection-color: #34413B;
+}
+
+QWidget#wavePage QTableView#waveStepsTable QHeaderView::section {
+    background-color: #F2F7F4;
+    color: #34413B;
+    border: none;
+    border-right: 1px solid #DCE4E0;
+    border-bottom: 1px solid #DCE4E0;
+    padding: 6px 8px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+QWidget#wavePage QTableView#waveStepsTable QScrollBar:vertical {
+    background: transparent;
+    width: 9px;
+    margin: 4px 2px 4px 0;
+}
+
+QWidget#wavePage QTableView#waveStepsTable QScrollBar::handle:vertical {
+    background: #B9C5BF;
+    min-height: 24px;
+    border-radius: 4px;
+}
+
+QWidget#wavePage QTableView#waveStepsTable QScrollBar::add-line:vertical,
+QWidget#wavePage QTableView#waveStepsTable QScrollBar::sub-line:vertical,
+QWidget#wavePage QTableView#waveStepsTable QScrollBar::add-page:vertical,
+QWidget#wavePage QTableView#waveStepsTable QScrollBar::sub-page:vertical {
+    background: transparent;
+    height: 0px;
+}
+
+QWidget#wavePage QLabel#waveStatLabel {
+    color: #66736D;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+QWidget#wavePage QLabel#waveStatValue {
+    color: #238461;
+    font-size: 17px;
+    font-weight: 700;
+}
+
+QWidget#wavePage QComboBox:disabled,
+QWidget#wavePage QLineEdit:disabled,
+QWidget#wavePage QSpinBox:disabled,
+QWidget#wavePage QDoubleSpinBox:disabled {
+    background-color: #F1F3F2;
+    color: #9EA8A3;
+    border-color: #E1E6E3;
+}
+
+/* ========================================================================
+   REFERENCE_MATCH_20260819
+   Page-local visual alignment for Dashboard, Pumps, Sensors and Camera.
+   The global topbar/sidebar are intentionally not targeted here.
+   ======================================================================== */
+
+/* Dashboard -------------------------------------------------------------- */
+QWidget#homePage QGroupBox#deviceCard,
+QWidget#homePage QGroupBox#overviewCard,
+QWidget#homePage QGroupBox#activityCard {
+    background: #FFFFFF;
+    border: 1px solid #D8E2DE;
+    border-radius: 8px;
+}
+
+QWidget#homePage QLabel#deviceName {
+    color: #17231F;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+QWidget#homePage QLabel#informationLabel {
+    color: #596861;
+    font-size: 14px;
+    font-weight: 400;
+}
+
+QWidget#homePage QLabel#informationValue {
+    color: #23312B;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+QWidget#homePage QFrame#deviceInfoDivider {
+    background: #DDE5E1;
+    border: none;
+    min-width: 1px;
+    max-width: 1px;
+}
+
+QWidget#homePage QGroupBox#overviewCard::title,
+QWidget#homePage QGroupBox#activityCard::title {
+    left: 24px;
+    top: 16px;
+    color: #17231F;
+    font-size: 17px;
+    font-weight: 700;
+}
+
+QWidget#homePage QLabel#overviewValue {
+    color: #15966D;
+    font-size: 22px;
+    font-weight: 700;
+}
+
+QWidget#homePage QLabel#overviewDescription {
+    color: #75817B;
+    font-size: 13px;
+}
+
+QWidget#homePage QTextEdit#activityLog {
+    background: #FBFCFB;
+    color: #2C3833;
+    border: 1px solid #DDE5E1;
+    border-radius: 7px;
+    padding: 16px;
+    font-size: 14px;
+}
+
+/* Pumps ----------------------------------------------------------------- */
+QWidget#pumpsPage QScrollArea#driverScroll,
+QWidget#pumpsPage QScrollArea#driverScroll > QWidget > QWidget,
+QWidget#pumpsPage QWidget#driverContainer {
+    background: transparent;
+    border: none;
+}
+
+QWidget#pumpsPage QGroupBox#driverCard {
+    background: #FFFFFF;
+    color: #17231F;
+    border: 1px solid #D8E2DE;
+    border-radius: 9px;
+    padding-top: 34px;
+}
+
+QWidget#pumpsPage QGroupBox#driverCard::title {
+    subcontrol-origin: padding;
+    subcontrol-position: top left;
+    left: 24px;
+    top: 16px;
+    padding: 0;
+    color: #17231F;
+    font-size: 19px;
+    font-weight: 700;
+}
+
+QWidget#pumpsPage QFrame#parameterCard {
+    background: #FBFCFB;
+    border: 1px solid #E1E8E5;
+    border-radius: 9px;
+}
+
+QWidget#pumpsPage QFrame#parameterCard:hover {
+    background: #FCFDFC;
+    border-color: #D9E4DF;
+}
+
+QWidget#pumpsPage QLabel#parameterLabel {
+    color: #405049;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+QWidget#pumpsPage QSpinBox#parameterSpinBox,
+QWidget#pumpsPage QComboBox#waveformBox {
+    min-height: 46px;
+    max-height: 46px;
+    background: #FFFFFF;
+    border: 1px solid #D4DFDA;
+    border-radius: 8px;
+    color: #26342E;
+    font-size: 14px;
+}
+
+QWidget#pumpsPage QSpinBox#parameterSpinBox {
+    padding: 0 12px;
+}
+
+QWidget#pumpsPage QComboBox#waveformBox {
+    padding: 0 24px 0 12px;
+}
+
+QWidget#pumpsPage QSlider#parameterSlider {
+    min-height: 26px;
+}
+
+QWidget#pumpsPage QSlider#parameterSlider::groove:horizontal {
+    height: 4px;
+    background: #DCE5E1;
+    border-radius: 2px;
+}
+
+QWidget#pumpsPage QSlider#parameterSlider::sub-page:horizontal {
+    background: #159B70;
+    border-radius: 2px;
+}
+
+QWidget#pumpsPage QSlider#parameterSlider::add-page:horizontal {
+    background: #DCE5E1;
+    border-radius: 2px;
+}
+
+QWidget#pumpsPage QSlider#parameterSlider::handle:horizontal {
+    width: 18px;
+    height: 18px;
+    margin: -8px 0;
+    background: #27A176;
+    border: 2px solid #FFFFFF;
+    border-radius: 9px;
+}
+
+/* Preserve the existing design decision: stopped pumps look inactive while
+   amplitude controls remain editable. */
+QWidget#pumpsPage QSpinBox#parameterSpinBox[pumpStopped="true"] {
+    background: #F1F4F2;
+    color: #9BA5A0;
+    border-color: #E1E7E4;
+}
+
+QWidget#pumpsPage QSlider#parameterSlider[pumpStopped="true"]::groove:horizontal,
+QWidget#pumpsPage QSlider#parameterSlider[pumpStopped="true"]::add-page:horizontal {
+    background: #E5EAE7;
+}
+
+QWidget#pumpsPage QSlider#parameterSlider[pumpStopped="true"]::sub-page:horizontal,
+QWidget#pumpsPage QSlider#parameterSlider[pumpStopped="true"]::handle:horizontal {
+    background: #BFCBC5;
+}
+
+/* Sensors --------------------------------------------------------------- */
+QWidget#sensorsPage QFrame#sensorLoggingBar {
+    min-height: 82px;
+    max-height: 82px;
+    background: #FFFFFF;
+    border: 1px solid #D8E2DE;
+    border-radius: 8px;
+}
+
+QWidget#sensorsPage QPushButton#sensorBrowseButton,
+QWidget#sensorsPage QPushButton#sensorStartButton,
+QWidget#sensorsPage QPushButton#sensorStopButton,
+QWidget#sensorsPage QLineEdit#sensorPathEdit,
+QWidget#sensorsPage QComboBox#sensorRateBox {
+    min-height: 52px;
+    max-height: 52px;
+    border-radius: 7px;
+    font-size: 14px;
+}
+
+QWidget#sensorsPage QPushButton#sensorStartButton {
+    color: #148863;
+    border-color: #61B997;
+    font-weight: 600;
+}
+
+QWidget#sensorsPage QPushButton#sensorStopButton {
+    color: #DE3535;
+    border-color: #F0A3A3;
+    font-weight: 600;
+}
+
+QWidget#sensorsPage QFrame#sensorChartPanel,
+QWidget#sensorsPage QFrame#sensorBoardCard {
+    background: #FFFFFF;
+    border: 1px solid #D8E2DE;
+    border-radius: 8px;
+}
+
+QWidget#sensorsPage QLabel#sensorSectionTitle {
+    color: #17231F;
+    font-size: 19px;
+    font-weight: 700;
+}
+
+QWidget#sensorsPage QPushButton#sensorPauseButton,
+QWidget#sensorsPage QPushButton#sensorFitButton,
+QWidget#sensorsPage QPushButton#sensorAutoScaleButton {
+    min-height: 40px;
+    max-height: 40px;
+    border-radius: 6px;
+    font-size: 12px;
+}
+
+QWidget#sensorsPage QWidget#sensorCardHeader {
+    min-height: 108px;
+}
+
+QWidget#sensorsPage QLabel#sensorBoardName {
+    color: #16221E;
+    font-size: 22px;
+    font-weight: 600;
+}
+
+QWidget#sensorsPage QLabel#sensorBoardType {
+    color: #50605A;
+    font-size: 13px;
+}
+
+QWidget#sensorsPage QWidget#sensorRow {
+    min-height: 56px;
+    max-height: 56px;
+}
+
+QWidget#sensorsPage QLabel#sensorName {
+    font-size: 15px;
+}
+
+QWidget#sensorsPage QLabel#hideInactiveLabel {
+    color: #405049;
+    font-size: 13px;
+}
+
+/* Camera ---------------------------------------------------------------- */
+QWidget#cameraPage QFrame#cameraToolbarCard {
+    min-height: 80px;
+    max-height: 80px;
+    background: #FFFFFF;
+    border: 1px solid #D8E2DE;
+    border-radius: 8px;
+}
+
+QWidget#cameraPage QComboBox#cameraCombo[toolbar="true"] {
+    min-height: 48px;
+    max-height: 48px;
+    background: #FFFFFF;
+    border: 1px solid #D1DDD8;
+    border-radius: 7px;
+    padding: 0 36px 0 16px;
+    color: #31413A;
+    font-size: 14px;
+}
+
+QWidget#cameraPage QPushButton#cameraStatus,
+QWidget#cameraPage QPushButton#cameraSecondaryButton,
+QWidget#cameraPage QPushButton#cameraPrimaryButton {
+    min-height: 48px;
+    max-height: 48px;
+    border-radius: 7px;
+    font-size: 14px;
+}
+
+QWidget#cameraPage QPushButton#cameraPrimaryButton {
+    color: #FFFFFF;
+    background: #14966D;
+    border: 1px solid #14966D;
+    font-weight: 600;
+}
+
+QWidget#cameraPage QPushButton#cameraPrimaryButton:hover {
+    color: #FFFFFF;
+    background: #10845F;
+    border-color: #10845F;
+}
+
+QWidget#cameraPage QPushButton#cameraSecondaryButton,
+QWidget#cameraPage QPushButton#cameraStatus {
+    background: #FFFFFF;
+    color: #24332D;
+    border: 1px solid #D1DDD8;
+}
+
+QWidget#cameraPage QGroupBox#cameraCard {
+    background: #FFFFFF;
+    border: 1px solid #D8E2DE;
+    border-radius: 8px;
+    padding-top: 42px;
+}
+
+QWidget#cameraPage QGroupBox#cameraCard::title {
+    subcontrol-origin: padding;
+    subcontrol-position: top left;
+    left: 24px;
+    top: 16px;
+    padding: 0;
+    color: #17231F;
+    font-size: 19px;
+    font-weight: 700;
+}
+
+QWidget#cameraPage QLabel#cameraPreview {
+    background: #303638;
+    color: #E5ECE9;
+    border: 1px solid #262D2F;
+    border-radius: 7px;
+    font-size: 15px;
+}
+
+QWidget#cameraPage QPushButton#cameraActionButton {
+    min-height: 48px;
+    max-height: 48px;
+    background: #FFFFFF;
+    color: #2B3933;
+    border: 1px solid #D1DDD8;
+    border-radius: 7px;
+    font-size: 14px;
+}
+
+QWidget#cameraPage QComboBox#cameraCombo {
+    min-height: 48px;
+    max-height: 48px;
+    background: #FFFFFF;
+    border: 1px solid #D1DDD8;
+    border-radius: 7px;
+    padding: 0 36px 0 14px;
+    font-size: 14px;
+}
+
+QWidget#cameraPage QLabel#cameraFieldLabel {
+    color: #2F3D37;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+QWidget#cameraPage QLabel#cameraFocusHint,
+QWidget#cameraPage QLabel#cameraHint,
+QWidget#cameraPage QLabel#cameraValue {
+    color: #718079;
+    font-size: 13px;
+}
+
+/* State overrides must come after the reference-match geometry so disabled
+   controls keep the application's existing visual feedback. */
+QWidget#cameraPage QComboBox#cameraCombo[toolbar="true"] {
+    padding-left: 16px;
+}
+
+QWidget#cameraPage QPushButton#cameraPrimaryButton:disabled,
+QWidget#cameraPage QPushButton#cameraSecondaryButton:disabled,
+QWidget#cameraPage QPushButton#cameraActionButton:disabled,
+QWidget#cameraPage QPushButton#cameraStatus:disabled {
+    color: #A3ADA8;
+    background: #F1F4F2;
+    border-color: #E1E7E4;
+}
+
+QWidget#cameraPage QComboBox#cameraCombo:disabled {
+    color: #A3ADA8;
+    background: #F1F4F2;
+    border-color: #E1E7E4;
+}
+
+QWidget#sensorsPage QPushButton#sensorStartButton:disabled,
+QWidget#sensorsPage QPushButton#sensorStopButton:disabled,
+QWidget#sensorsPage QPushButton#sensorBrowseButton:disabled {
+    color: #A3ADA8;
+    background: #F1F4F2;
+    border-color: #E1E7E4;
+}
+
+/* V47: Wave-page busy state when a channel is already used manually. */
+QWidget#wavePage QPushButton#wavePrimaryButton[blockedByPump="true"]:disabled {
+    background-color: #FFF3F2;
+    color: #C94C45;
+    border-color: #E88B85;
+}
+
+/* ========================================================================== */
+/* V68 Workspace UI refinement — ALL selectors remain Workspace-scoped.       */
+/* Existing Home/Pumps/Sensors/Wave/Camera/Analytics/Valves styling untouched. */
+/* ========================================================================== */
+
+#workspacePage,
+#workspaceBuilder,
+#workspaceActiveContainer {
+    background: #F8FAF9;
+}
+
+#workspaceSubtitle,
+#workspaceActiveSubtitle {
+    color: #52616D;
+    font-size: 14px;
+}
+
+#workspacePersistenceHint {
+    color: #60717A;
+    font-size: 12px;
+    padding: 4px 0px;
+}
+
+#workspacePresetLabel,
+#workspaceFieldLabel,
+#workspaceMutedLabel {
+    color: #46545F;
+    font-size: 13px;
+}
+
+#workspacePresetCombo,
+#workspaceCombo,
+#workspaceSpin {
+    background: #FFFFFF;
+    border: 1px solid #D5DFDA;
+    border-radius: 6px;
+    color: #18252D;
+    padding: 0 12px;
+    min-height: 34px;
+    selection-background-color: #E8F4EF;
+}
+
+#workspacePresetCombo:hover,
+#workspaceCombo:hover,
+#workspaceSpin:hover {
+    border-color: #A6CDBD;
+}
+
+#workspacePresetCombo:focus,
+#workspaceCombo:focus,
+#workspaceSpin:focus {
+    border-color: #69B396;
+}
+
+#workspacePresetCombo::drop-down,
+#workspaceCombo::drop-down {
+    border: none;
+    width: 28px;
+}
+
+#workspaceToolbarButton,
+#workspaceOutlineAction,
+#workspaceChartButton,
+#workspaceCameraAction,
+#workspaceSecondaryAction {
+    background: #FFFFFF;
+    color: #087F5B;
+    border: 1px solid #B7D2C6;
+    border-radius: 6px;
+    padding: 0 14px;
+    font-size: 13px;
+}
+
+#workspaceToolbarButton:hover,
+#workspaceOutlineAction:hover,
+#workspaceChartButton:hover,
+#workspaceCameraAction:hover,
+#workspaceSecondaryAction:hover {
+    background: #F2F8F5;
+    border-color: #83BDA5;
+}
+
+#workspaceToolbarButton:disabled,
+#workspaceOutlineAction:disabled,
+#workspaceChartButton:disabled,
+#workspaceCameraAction:disabled,
+#workspaceSecondaryAction:disabled {
+    background: #F4F6F5;
+    color: #AAB3AF;
+    border-color: #E1E6E3;
+}
+
+#workspaceEmptySlot {
+    background: #FFFFFF;
+    border: 1px solid #D8E1DD;
+    border-radius: 8px;
+}
+
+#workspaceAddButton {
+    background: #FFFFFF;
+    color: #079663;
+    border: 1px dashed #C5D2CD;
+    border-radius: 47px;
+    font-size: 40px;
+    font-weight: 300;
+    padding: 0;
+}
+
+#workspaceAddButton:hover {
+    background: #F3F9F6;
+    border-color: #70B79C;
+}
+
+#workspaceSlotTitle {
+    color: #13232C;
+    font-size: 16px;
+    font-weight: 650;
+}
+
+#workspaceSlotDescription,
+#workspaceQuickSetup:hover {
+    background: #F7FBF9;
+    border-color: #9CC9B6;
+}
+
+#workspacePanelPicker {
+    background: transparent;
+}
+
+#workspacePickerCard {
+    background: #FFFFFF;
+    border: 1px solid #D3DDDA;
+    border-radius: 10px;
+}
+
+#workspacePickerTitle {
+    color: #13232C;
+    font-size: 19px;
+    font-weight: 700;
+}
+
+#workspacePickerSubtitle {
+    color: #6A767F;
+    font-size: 12px;
+}
+
+#workspacePickerClose,
+#workspacePanelClose {
+    background: transparent;
+    border: none;
+    color: #53636D;
+    font-size: 20px;
+    padding: 0;
+}
+
+#workspacePickerClose:hover,
+#workspacePanelClose:hover {
+    background: #EEF3F1;
+    color: #24333B;
+    border-radius: 5px;
+}
+
+#workspacePickerOption {
+    background: #FFFFFF;
+    border: 1px solid #D9E1DE;
+    border-radius: 7px;
+    color: #17252E;
+    text-align: left;
+    padding: 8px 16px;
+    font-size: 13px;
+}
+
+#workspacePickerOption:hover {
+    background: #F3F9F6;
+    border-color: #91C5AF;
+}
+
+#workspacePickerOption:disabled {
+    color: #ADB6B2;
+    background: #F5F6F6;
+    border-color: #E7EAE9;
+}
+
+#workspaceActiveToolbar {
+    background: transparent;
+    border: none;
+}
+
+#workspaceSplitter::handle {
+    background: #D6E0DC;
+    margin-left: 2px;
+    margin-right: 2px;
+}
+
+#workspaceSplitter::handle:hover {
+    background: #B8C9C2;
+}
+
+#workspacePanelShell {
+    background: #FFFFFF;
+    border: 1px solid #D6E0DC;
+    border-radius: 8px;
+}
+
+#workspacePanelHeader {
+    background: #FFFFFF;
+    border: none;
+    border-bottom: 0px;
+}
+
+#workspacePanelShellTitle {
+    color: #13232C;
+    font-size: 17px;
+    font-weight: 700;
+}
+
+#workspacePanelShell #workspacePumpPanel,
+#workspacePanelShell #workspaceSensorPanel,
+#workspacePanelShell #workspaceWavePanel,
+#workspacePanelShell #workspaceCameraPanel {
+    background: #FFFFFF;
+    border: none;
+    border-radius: 0px;
+}
+
+#workspacePanelTitle {
+    color: #13232C;
+    font-size: 17px;
+    font-weight: 700;
+}
+
+#workspaceSubTitle,
+#workspaceSensorListTitle {
+    color: #16252D;
+    font-size: 14px;
+    font-weight: 650;
+}
+
+#workspaceSeparator {
+    color: #E2E8E5;
+    background: #E2E8E5;
+    max-height: 1px;
+    border: none;
+}
+
+#workspaceSlider::groove:horizontal {
+    height: 4px;
+    border: none;
+    background: #DDE6E2;
+    border-radius: 2px;
+}
+
+#workspaceSlider::sub-page:horizontal {
+    background: #159D72;
+    border-radius: 2px;
+}
+
+#workspaceSlider::handle:horizontal {
+    width: 16px;
+    height: 16px;
+    margin: -6px 0;
+    border-radius: 8px;
+    background: #20A379;
+    border: 1px solid #FFFFFF;
+}
+
+#workspaceCapabilityBanner {
+    background: #ECF7F2;
+    color: #16835F;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 11px;
+    font-size: 11px;
+}
+
+#workspacePrimaryAction {
+    background: #109B6E;
+    color: #FFFFFF;
+    border: 1px solid #109B6E;
+    border-radius: 6px;
+    padding: 0 15px;
+    font-weight: 650;
+    font-size: 13px;
+}
+
+#workspacePrimaryAction:hover {
+    background: #0A8C62;
+    border-color: #0A8C62;
+}
+
+#workspacePrimaryAction:disabled {
+    background: #DCE4E1;
+    color: #9AA6A1;
+    border-color: #DCE4E1;
+}
+
+#workspaceDangerAction,
+#workspaceDangerOutline {
+    background: #FFFFFF;
+    color: #EE4444;
+    border: 1px solid #F0A4A4;
+    border-radius: 6px;
+    padding: 0 15px;
+    font-size: 13px;
+}
+
+#workspaceDangerAction:hover,
+#workspaceDangerOutline:hover {
+    background: #FFF7F7;
+    border-color: #EB7777;
+}
+
+#workspaceDangerAction:disabled,
+#workspaceDangerOutline:disabled {
+    color: #B8BEBC;
+    background: #F4F6F5;
+    border-color: #E2E6E4;
+}
+
+#workspaceStatusLabel {
+    color: #52616A;
+    font-size: 12px;
+}
+
+#workspaceSensorList {
+    background: #FFFFFF;
+    border-left: 1px solid #E3E9E6;
+}
+
+#workspaceSensorChoice {
+    background: #FFFFFF;
+    color: #192831;
+    border: 1px solid #DCE3E0;
+    border-radius: 6px;
+    padding: 0 9px;
+    spacing: 7px;
+    font-size: 11px;
+}
+
+#workspaceSensorChoice:checked {
+    background: #EDF7F2;
+    color: #18845F;
+    border-color: #D5EADF;
+}
+
+#workspaceStatsBox,
+#workspaceCameraControls {
+    background: #FFFFFF;
+    border: 1px solid #DCE3E0;
+    border-radius: 6px;
+}
+
+#workspaceStatLabel {
+    color: #6A777E;
+    font-size: 11px;
+}
+
+#workspaceStatValue {
+    color: #068C63;
+    font-size: 15px;
+    font-weight: 700;
+}
+
+#workspaceCameraPreview {
+    background: #2D3336;
+    color: #F4F6F5;
+    border: none;
+    border-radius: 5px;
+    font-size: 13px;
+}
+
+/* V69 Workspace local chooser — chooser replaces only the affected slot. */
+#workspaceSlotStack,
+#workspaceSlotEmptyState,
+#workspaceSlotChooser {
+    background: transparent;
+    border: none;
+}
+
+#workspaceSlotChooser {
+    border-radius: 8px;
+}
+
+#workspaceSlotChooser #workspacePickerOption {
+    min-height: 56px;
+}
+
+/* ========================================================================== */
+/* V69 Workspace reference panels — Pump + Live Sensor Data only.             */
+/* All selectors are Workspace-scoped; existing pages remain untouched.       */
+/* ========================================================================== */
+
+#workspacePanelShell #workspacePumpPanel {
+    background: #FFFFFF;
+}
+
+#workspacePumpPanel #workspaceCapabilityBanner {
+    margin-top: 0px;
+    margin-bottom: 2px;
+}
+
+#workspacePumpPanel #workspaceFieldLabel {
+    color: #46545F;
+    font-size: 13px;
+}
+
+#workspacePumpPanel #workspacePrimaryAction {
+    min-height: 48px;
+}
+
+#workspacePumpPanel #workspaceDangerAction:disabled {
+    color: #AEB7B3;
+    background: #F5F6F6;
+    border-color: #E0E5E2;
+}
+
+#workspacePanelShell #workspaceSensorPanel {
+    background: #FFFFFF;
+}
+
+#workspaceSensorPanel #workspaceCombo {
+    min-height: 40px;
+}
+
+#workspaceSensorPanel #workspaceOutlineAction {
+    min-width: 104px;
+    font-weight: 500;
+}
+
+/* Logging stop remains recognisably destructive even when unavailable. */
+#workspaceSensorPanel #workspaceDangerOutline:disabled {
+    color: #D78383;
+    background: #FFF9F9;
+    border-color: #F0C1C1;
+}
+
+#workspaceSensorPanel #workspaceChartButton {
+    background: #FFFFFF;
+    color: #087F5B;
+    border: 1px solid #B7D2C6;
+    border-radius: 6px;
+    padding: 0px 12px;
+    font-size: 12px;
+}
+
+#workspaceSensorPanel #workspaceSensorSignalTitle {
+    color: #0A8D64;
+    font-size: 14px;
+    font-weight: 650;
+    padding-top: 2px;
+}
+
+#workspaceSensorPanel #workspaceSensorList {
+    background: #FFFFFF;
+    border: none;
+}
+
+#workspaceSensorPanel #workspaceSensorListTitle {
+    color: #18272F;
+    font-size: 13px;
+    font-weight: 650;
+}
+
+#workspaceSensorPanel #workspaceSensorListHelper {
+    color: #6B777E;
+    font-size: 11px;
+    font-weight: 400;
+}
+
+#workspaceSensorPanel #workspaceSensorChoice {
+    background: #FFFFFF;
+    color: #202E36;
+    border: 1px solid #DCE3E0;
+    border-radius: 6px;
+    padding: 0px 11px;
+    spacing: 7px;
+    font-size: 11px;
+}
+
+#workspaceSensorPanel #workspaceSensorChoice:hover {
+    background: #F7FAF8;
+    border-color: #B8CEC4;
+}
+
+#workspaceSensorPanel #workspaceSensorChoice:checked {
+    background: #EDF7F2;
+    color: #18845F;
+    border-color: #CFE6DB;
+}
+
+#workspaceSensorPanel #workspaceMutedLabel {
+    color: #53616A;
+    font-size: 11px;
+}
+
+/* ========================================================================== */
+/* V72 Workspace Pump Control — compact two-channel reference layout.         */
+/* Scoped strictly to Pump Control inside Workspace.                          */
+/* ========================================================================== */
+
+#workspacePumpPanel #workspacePumpChannelCard {
+    background: #FFFFFF;
+    border: 1px solid #D8E1DD;
+    border-radius: 6px;
+}
+
+#workspacePumpPanel #workspacePumpChannelCombo,
+#workspacePumpPanel #workspacePumpSignalCombo {
+    background: #FFFFFF;
+    border: 1px solid #D5DFDA;
+    border-radius: 6px;
+    color: #18252D;
+    padding: 0px 10px;
+    selection-background-color: #E8F4EF;
+}
+
+#workspacePumpPanel #workspacePumpChannelCombo:hover,
+#workspacePumpPanel #workspacePumpSignalCombo:hover {
+    border-color: #A6CDBD;
+}
+
+#workspacePumpPanel #workspacePumpChannelCombo:focus,
+#workspacePumpPanel #workspacePumpSignalCombo:focus {
+    border-color: #69B396;
+}
+
+#workspacePumpPanel #workspacePumpChannelCombo::drop-down,
+#workspacePumpPanel #workspacePumpSignalCombo::drop-down {
+    border: none;
+    width: 26px;
+}
+
+#workspacePumpPanel #workspacePumpToggleState {
+    color: #46545F;
+    font-size: 12px;
+}
+
+#workspacePumpPanel #workspaceSpin {
+    min-height: 36px;
+    padding: 0px 10px;
+}
+
+#workspacePumpPanel #workspaceCapabilityBanner {
+    margin-bottom: 2px;
+}
+
+
+/* ========================================================================== */
+/* V75 Workspace Pump UX parity — mirror Pumps-page stopped-state semantics.  */
+/* Amplitude remains editable while OFF, but looks inactive until output ON.  */
+/* ========================================================================== */
+
+#workspacePumpPanel QSpinBox#workspaceSpin[pumpStopped="true"] {
+    background: #F1F4F2;
+    color: #9BA5A0;
+    border-color: #E1E7E4;
+}
+
+#workspacePumpPanel QSlider#workspaceSlider[pumpStopped="true"]::groove:horizontal,
+#workspacePumpPanel QSlider#workspaceSlider[pumpStopped="true"]::add-page:horizontal {
+    background: #E5EAE7;
+}
+
+#workspacePumpPanel QSlider#workspaceSlider[pumpStopped="true"]::sub-page:horizontal,
+#workspacePumpPanel QSlider#workspaceSlider[pumpStopped="true"]::handle:horizontal {
+    background: #BFCBC5;
+}
+
+/* V77: Wave Workspace mirrors the full Wave tab's manual-pump busy feedback.
+   Geometry/layout are intentionally unchanged. */
+#workspaceWavePanel #workspacePrimaryAction[blockedByPump="true"]:disabled {
+    background-color: #FFF3F2;
+    color: #C94C45;
+    border-color: #E88B85;
+}
+
+#workspaceWavePanel #workspaceCapabilityBanner[state="invalid"] {
+    background: #FFF6F5;
+    color: #B34B45;
+}
+
+#workspaceWavePanel #workspaceCapabilityBanner[state="neutral"] {
+    background: #F3F6F5;
+    color: #66736D;
 }

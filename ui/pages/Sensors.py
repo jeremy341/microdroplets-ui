@@ -1,13 +1,19 @@
+"""Sensor selection, live plotting, comparison and CSV logging page.
+
+The page consumes parsed ``BackendEvent`` objects exposed by ``app.py``/the
+connected board model; serial parsing itself remains in the backend.  See
+``docs/DEVELOPER_GUIDE.md`` and ``docs/DEVELOPER_GUIDE.md``.
+"""
+
 import json
 import math
-import random
 from dataclasses import dataclass
 from datetime import datetime
 from time import monotonic
 from pathlib import Path
 
-from PyQt6.QtCore import QPointF, QRectF, QSize, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PyQt6.QtCore import QPointF, QRectF, QSize, QTimer, QUrl, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -25,6 +31,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ui.design_tokens import CARD_GAP, CARD_PADDING, PAGE_BOTTOM, PAGE_GUTTER, PAGE_TOP, PRIMARY_CONTROL_HEIGHT, ROW_HEIGHT, SECTION_GAP
+from backend.application_paths import DEFAULT_SENSOR_LOG_PATH, SENSOR_LOGS_DIR
 from backend.csv_logger import AsyncCsvLogger, LogSample
 
 try:
@@ -39,6 +46,15 @@ RED = "#FF1F1F"
 
 # The backend normalizes liquid flow to Bartels FluidicStudio's unit.
 LIQUID_FLOW_UNIT = "µL/min"
+
+
+def format_sensor_value(value, precision):
+    """Keep useful decimals without displaying a redundant trailing .00."""
+
+    text = f"{float(value):,.{max(0, int(precision))}f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
 
 @dataclass(frozen=True)
 class MeasurementDefinition:
@@ -293,6 +309,8 @@ if pg is not None:
 class SensorChart(QWidget):
     """One focused, dynamically labelled measurement chart."""
 
+    # Live view shows only the newest 30 seconds, while the Sensors page keeps
+    # a longer in-memory history that the user can inspect by pausing/panning.
     LIVE_WINDOW_SECONDS = 30.0
 
     def __init__(self):
@@ -303,6 +321,7 @@ class SensorChart(QWidget):
         self.timestamps = []
         self.uses_datetime_axis = False
         self._recording = False
+        self._axis_labels = ("Value", "")
         self._manual_scale = False
         self._follow_live = True
         self._current_y_range = None
@@ -335,7 +354,21 @@ class SensorChart(QWidget):
         self._plot.setMenuEnabled(False)
         self._plot.hideButtons()
         self._plot.showGrid(x=True, y=True, alpha=0.09)
-        self._plot.hideAxis("right")
+        self._plot_item = self._plot.getPlotItem()
+        self._right_view = pg.ViewBox(enableMenu=False)
+        self._right_view.setMouseEnabled(x=False, y=False)
+        self._plot_item.showAxis("right")
+        self._plot_item.scene().addItem(self._right_view)
+        self._plot_item.getAxis("right").linkToView(self._right_view)
+        self._right_view.setXLink(self._view_box)
+        self._view_box.sigResized.connect(self._sync_right_view)
+        self._plot_item.getAxis("right").setPen(pg.mkPen("#53606D", width=1.15))
+        self._plot_item.getAxis("right").setTextPen(pg.mkPen("#25364A"))
+        self._plot_item.getAxis("right").setWidth(48)
+        self._plot_item.getAxis("right").setStyle(
+            tickFont=QFont("Segoe UI", 8), tickTextOffset=2
+        )
+        self._plot_item.getAxis("right").setVisible(False)
         self._plot.setLabel("bottom", "Time", color="#33445A")
         self._plot.setXRange(0, 72, padding=0)
         self._plot.setLimits(xMin=0, minXRange=2)
@@ -367,13 +400,19 @@ class SensorChart(QWidget):
         self._scale_timer.start()
 
         self._curves = {}
+        self._curve_axes = {}
+        self._right_y_range = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self._plot, 1)
 
-    def set_data(self, series, timestamps, axis_label="Value"):
+    def _sync_right_view(self):
+        self._right_view.setGeometry(self._view_box.sceneBoundingRect())
+        self._right_view.linkedViewChanged(self._view_box, self._right_view.XAxis)
+
+    def set_data(self, series, timestamps, axis_label=None):
         """Render arbitrary series without scaling values into another unit."""
 
         previous_series = self.series
@@ -385,6 +424,8 @@ class SensorChart(QWidget):
             for previous, current in zip(previous_series, self.series):
                 if (
                     previous.get("id") != current.get("id")
+                    or previous.get("color") != current.get("color")
+                    or previous.get("axis", "left") != current.get("axis", "left")
                     or list(previous.get("values", ()))
                     != list(current.get("values", ()))
                     or list(previous.get("timestamps", ()))
@@ -396,34 +437,54 @@ class SensorChart(QWidget):
         for curve_id in tuple(self._curves):
             if curve_id not in active_ids:
                 curve = self._curves.pop(curve_id)
-                self._plot.removeItem(curve)
+                axis = self._curve_axes.pop(curve_id, "left")
+                (self._right_view if axis == "right" else self._view_box).removeItem(curve)
 
-        for item in self.series:
-            curve = self._curves.get(item["id"])
-            if curve is None:
-                curve = self._plot.plot()
-                self._curves[item["id"]] = curve
-            values = list(item.get("values", ()))
-            item_timestamps = list(item.get("timestamps", ()))
-            if len(item_timestamps) == len(values) and item_timestamps:
-                x_values = [timestamp.timestamp() for timestamp in item_timestamps]
-            else:
-                x_values = list(range(len(values)))
-            curve.setData(
-                x_values,
-                values,
-                pen=pg.mkPen(item.get("color", GREEN), width=1.7),
-                connect="finite",
-            )
+        if data_changed:
+            for item in self.series:
+                axis = item.get("axis", "left")
+                curve = self._curves.get(item["id"])
+                if curve is not None and self._curve_axes.get(item["id"]) != axis:
+                    previous_axis = self._curve_axes.get(item["id"], "left")
+                    (self._right_view if previous_axis == "right" else self._view_box).removeItem(curve)
+                    curve = None
+                if curve is None:
+                    curve = pg.PlotDataItem()
+                    (self._right_view if axis == "right" else self._view_box).addItem(curve)
+                    self._curves[item["id"]] = curve
+                    self._curve_axes[item["id"]] = axis
+                values = list(item.get("values", ()))
+                item_timestamps = list(item.get("timestamps", ()))
+                if len(item_timestamps) == len(values) and item_timestamps:
+                    x_values = [timestamp.timestamp() for timestamp in item_timestamps]
+                else:
+                    x_values = list(range(len(values)))
+                curve.setData(
+                    x_values,
+                    values,
+                    pen=pg.mkPen(item.get("color", GREEN), width=1.7),
+                    connect="finite",
+                )
 
-        self._plot.setLabel("left", "", color="#33445A")
+        if axis_label is None:
+            axis_label = self._axis_labels
+        if isinstance(axis_label, (tuple, list)):
+            left_label = axis_label[0] if axis_label else "Value"
+            right_label = axis_label[1] if len(axis_label) > 1 else ""
+        else:
+            left_label, right_label = axis_label, ""
+        self._axis_labels = (left_label, right_label)
+        self._plot.setLabel("left", left_label or "", color="#33445A")
+        self._plot.setLabel("right", right_label or "", color="#33445A")
+        self._plot_item.getAxis("right").setVisible(bool(right_label))
+        self._sync_right_view()
         if self.series:
             x_values = [
                 timestamp.timestamp()
                 for item in self.series
                 for timestamp in item.get("timestamps", ())
             ]
-            if x_values:
+            if data_changed and x_values:
                 first, latest = min(x_values), max(x_values)
                 if self._follow_live:
                     if latest - first < self.LIVE_WINDOW_SECONDS:
@@ -433,7 +494,7 @@ class SensorChart(QWidget):
                         low = latest - self.LIVE_WINDOW_SECONDS
                         high = latest
                     self._plot.setXRange(low, high, padding=0)
-            else:
+            elif data_changed:
                 max_count = max(len(item.get("values", ())) for item in self.series)
                 self._plot.setXRange(0, max(max_count - 1, 2), padding=0)
             # Layout refreshes and accordion changes can call set_data() with
@@ -442,14 +503,46 @@ class SensorChart(QWidget):
             # even though no measurement had changed.
             if data_changed:
                 self._update_stable_y_range()
-        self._time_axis.picture = None
-        self._time_axis.prepareGeometryChange()
-        self._time_axis.update()
+                if not self._manual_scale:
+                    right_values = self._finite_values(
+                        visible_only=self._follow_live,
+                        axis="right",
+                    )
+                    if right_values:
+                        self._right_y_range = self._padded_range(
+                            min(right_values), max(right_values)
+                        )
+                        self._right_view.setYRange(
+                            *self._right_y_range, padding=0, update=True
+                        )
+        if data_changed:
+            self._time_axis.picture = None
+            self._time_axis.prepareGeometryChange()
+            self._time_axis.update()
 
     def set_recording(self, recording):
+        # Logging is a data-output state, not a chart-navigation action. It
+        # must not disable live follow or change the visible time window.
         self._recording = bool(recording)
-        if not self._recording and self.series:
-            self.fit_data()
+
+    @property
+    def is_live_view(self):
+        """Return True only while the chart is actively following new data."""
+        return self._follow_live
+
+    def pause_view(self):
+        """Freeze the current viewport while sensor data keeps updating.
+
+        Pause is intentionally a view-only action. It does not touch the
+        serial stream, logging, histories, or curve data. By switching the
+        chart into manual scaling without setting a new range, the exact
+        current X/Y viewport is preserved. The user can still pan and zoom;
+        Live view explicitly returns to automatic following afterwards.
+        """
+        self._follow_live = False
+        self._manual_scale = True
+        self._quiet_since = None
+        self._target_y_range = None
 
     def resume_live(self):
         """Return to the latest samples after a manual pan or zoom."""
@@ -457,8 +550,30 @@ class SensorChart(QWidget):
         self._manual_scale = False
         self._quiet_since = None
         if self.series:
-            self.set_data(self.series, self.timestamps)
+            self.set_data(self.series, self.timestamps, self._axis_labels)
+            x_values = [
+                timestamp.timestamp()
+                for item in self.series
+                for timestamp in item.get("timestamps", ())
+            ]
+            if x_values:
+                first, latest = min(x_values), max(x_values)
+                low = (
+                    first
+                    if latest - first < self.LIVE_WINDOW_SECONDS
+                    else latest - self.LIVE_WINDOW_SECONDS
+                )
+                high = max(latest, low + self.LIVE_WINDOW_SECONDS)
+                self._plot.setXRange(low, high, padding=0)
             self._update_stable_y_range(force=True)
+            right_values = self._finite_values(visible_only=True, axis="right")
+            if right_values:
+                self._right_y_range = self._padded_range(
+                    min(right_values), max(right_values)
+                )
+                self._right_view.setYRange(
+                    *self._right_y_range, padding=0, update=True
+                )
 
     def fit_data(self):
         """Fit the complete buffered history for deliberate session review."""
@@ -468,6 +583,12 @@ class SensorChart(QWidget):
         values = self._finite_values()
         if values:
             self._request_range(self._padded_range(min(values), max(values)), force=True)
+        right_values = self._finite_values(axis="right")
+        if right_values:
+            self._right_y_range = self._padded_range(
+                min(right_values), max(right_values)
+            )
+            self._right_view.setYRange(*self._right_y_range, padding=0, update=True)
         x_values = [
             timestamp.timestamp()
             for item in self.series
@@ -486,10 +607,12 @@ class SensorChart(QWidget):
         if not self._programmatic_range_change:
             self._manual_scale = True
 
-    def _finite_values(self, visible_only=False):
+    def _finite_values(self, visible_only=False, axis=None):
         values = []
         x_low, x_high = self._view_box.viewRange()[0]
         for item in self.series:
+            if axis is not None and item.get("axis", "left") != axis:
+                continue
             item_values = list(item.get("values", ()))
             item_timestamps = list(item.get("timestamps", ()))
             for index, value in enumerate(item_values):
@@ -516,7 +639,10 @@ class SensorChart(QWidget):
     def _update_stable_y_range(self, force=False):
         if self._manual_scale:
             return
-        values = self._finite_values(visible_only=self._follow_live)
+        values = self._finite_values(
+            visible_only=self._follow_live,
+            axis="left",
+        )
         if not values:
             return
         data_low, data_high = min(values), max(values)
@@ -577,6 +703,16 @@ class SensorChart(QWidget):
             self._current_y_range = (current_low + delta_low * 0.16, current_high + delta_high * 0.16)
         self._apply_y_range(self._current_y_range)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._scale_timer.isActive():
+            self._scale_timer.start()
+
+    def hideEvent(self, event):
+        # A hidden pyqtgraph widget does not need a 31 Hz scale animation.
+        self._scale_timer.stop()
+        super().hideEvent(event)
+
     def _apply_y_range(self, value_range):
         self._programmatic_range_change = True
         try:
@@ -587,7 +723,7 @@ class SensorChart(QWidget):
 
 
 class SensorCard(QFrame):
-    measurement_selected = pyqtSignal(str, str)
+    measurement_selected = pyqtSignal(str, str, bool)
     expansion_requested = pyqtSignal(str, bool)
 
     def __init__(self, board_id, board_name, sensors, expanded=True, accent_color=BLUE):
@@ -656,6 +792,9 @@ class SensorCard(QFrame):
         self.sensor_rows_by_id = {}
         self.sensor_availability = {}
         self.selection_boxes = {}
+        self._selected_sensor_ids = []
+        self._comparison_sensor_id = None
+        self._max_selected = 2
         for sensor in sensors:
             row_widget = QWidget()
             row_widget.setObjectName("sensorRow")
@@ -684,13 +823,20 @@ class SensorCard(QFrame):
             row.addWidget(value)
             body_layout.addWidget(row_widget)
             available = bool(sensor.get("available", True))
+            # Hardware detection and chart selection are deliberately
+            # independent. Every measurement remains selectable even before
+            # its sensor has produced data; only the two-selection UI limit
+            # may temporarily disable an unselected row.
             row_widget.setProperty("available", available)
-            row_widget.setEnabled(available)
-            checkbox.setEnabled(available)
+            row_widget.setProperty("selectionLimited", False)
+            row_widget.setEnabled(True)
+            checkbox.setEnabled(True)
             self.sensor_rows.append((row_widget, sensor.get("active", True)))
             self.sensor_rows_by_id[sensor["sensor_id"]] = row_widget
             self.sensor_availability[sensor["sensor_id"]] = available
             self.selection_boxes[sensor["sensor_id"]] = checkbox
+            if sensor.get("visible", False):
+                self._selected_sensor_ids.append(sensor["sensor_id"])
             self.value_labels[sensor["key"]] = (
                 value,
                 sensor.get("unit", ""),
@@ -705,42 +851,63 @@ class SensorCard(QFrame):
         self.body.setVisible(expanded)
 
     def _selection_toggled(self, sensor_id, checked):
-        if checked:
-            self.set_selected_measurement(sensor_id)
-            self.measurement_selected.emit(self.board_id, sensor_id)
-            return
-
-        # An empty selection is valid. It means that this board is connected
-        # but is not currently included in the chart comparison.
-        self.measurement_selected.emit(self.board_id, "")
+        self.measurement_selected.emit(self.board_id, sensor_id, bool(checked))
 
     def set_selected_measurement(self, sensor_id):
+        self.set_selected_measurements([sensor_id] if sensor_id else [])
+
+    def set_selected_measurements(self, sensor_ids):
+        self._selected_sensor_ids = list(dict.fromkeys(sensor_ids or ()))[
+            : self._max_selected
+        ]
         for key, checkbox in self.selection_boxes.items():
             checkbox.blockSignals(True)
-            checkbox.setChecked(key == sensor_id)
+            checkbox.setChecked(key in self._selected_sensor_ids)
             checkbox.blockSignals(False)
+        self._refresh_row_states()
 
     def clear_selected_measurement(self):
         """Leave every measurement unchecked until the user chooses one."""
-        for checkbox in self.selection_boxes.values():
-            checkbox.blockSignals(True)
-            checkbox.setChecked(False)
-            checkbox.blockSignals(False)
+        self.set_selected_measurements([])
+
+    def _refresh_row_states(self):
+        at_limit = len(self._selected_sensor_ids) >= self._max_selected
+        for sensor_id, checkbox in self.selection_boxes.items():
+            selected = sensor_id in self._selected_sensor_ids
+            if self._comparison_sensor_id is not None:
+                allowed = sensor_id == self._comparison_sensor_id
+            else:
+                allowed = selected or not at_limit
+            checkbox.setProperty(
+                "comparison",
+                bool(self._comparison_sensor_id is not None and selected),
+            )
+            checkbox.setEnabled(allowed)
+            checkbox.update()
+            row_widget = self.sensor_rows_by_id.get(sensor_id)
+            if row_widget is not None:
+                row_widget.setProperty("selectable", allowed)
+                # Keep the row and its labels enabled. Disabling the parent
+                # propagates Qt's disabled palette to the labels and can mute
+                # selected text. Only the checkbox is disabled; this property
+                # controls the grey label styling when the selection limit is
+                # reached.
+                row_widget.setProperty("selectionLimited", not allowed)
+                row_widget.setEnabled(True)
+                row_widget.style().unpolish(row_widget)
+                row_widget.style().polish(row_widget)
+
+    def set_max_selected(self, maximum):
+        self._max_selected = max(1, int(maximum))
+        self.set_selected_measurements(self._selected_sensor_ids)
 
     def set_comparison_state(self, enabled, sensor_id=None):
         self.setProperty("comparison", bool(enabled))
         self.comparison_badge.setVisible(False)
         if enabled and sensor_id:
-            self.set_selected_measurement(sensor_id)
-        for current_sensor_id, checkbox in self.selection_boxes.items():
-            available = self.sensor_availability.get(current_sensor_id, True)
-            allowed = available and (not enabled or current_sensor_id == sensor_id)
-            checkbox.setProperty("comparison", bool(enabled and current_sensor_id == sensor_id))
-            checkbox.setEnabled(allowed)
-            checkbox.update()
-            row_widget = self.sensor_rows_by_id.get(current_sensor_id)
-            if row_widget is not None:
-                row_widget.setEnabled(allowed)
+            self._selected_sensor_ids = [sensor_id]
+        self._comparison_sensor_id = sensor_id if enabled else None
+        self.set_selected_measurements(self._selected_sensor_ids)
         self.style().unpolish(self)
         self.style().polish(self)
         self.update()
@@ -763,14 +930,32 @@ class SensorCard(QFrame):
         for row_widget, active in self.sensor_rows:
             row_widget.setVisible(active or not hide_inactive)
 
+    def set_sensor_available(self, sensor_id, available):
+        """Record detection without changing the user's chart selection."""
+        available = bool(available)
+        self.sensor_availability[sensor_id] = available
+        row_widget = self.sensor_rows_by_id.get(sensor_id)
+        if row_widget is not None:
+            row_widget.setProperty("available", available)
+            row_widget.style().unpolish(row_widget)
+            row_widget.style().polish(row_widget)
+        self._refresh_row_states()
+
     def update_values(self, values):
         for key, (label, unit, precision) in self.value_labels.items():
             if key in values:
-                label.setText(f"Current: {values[key]:,.{precision}f} {unit}")
+                label.setText(
+                    f"Current: {format_sensor_value(values[key], precision)} {unit}"
+                )
 
 
 class SensorsPage(QWidget):
     """Sensor monitoring page matching the approved desktop mockup."""
+
+    # Keep ten minutes of graph history during normal live operation.
+    # Pause/Fit Data suspend trimming so the data under a manual viewport
+    # cannot disappear while the user is inspecting it.
+    LIVE_HISTORY_SECONDS = 10 * 60
 
     def __init__(self):
         super().__init__()
@@ -786,6 +971,7 @@ class SensorsPage(QWidget):
         self.current_values = {}
         self.accumulated_volumes_ul = {}
         self.selected_measurements = {}
+        self.selected_measurement_sets = {}
         self.explicit_measurement_selections = set()
         self.measurement_metadata = {}
         self.histories = {}
@@ -793,22 +979,22 @@ class SensorsPage(QWidget):
         self.session_rows = []
         self.board_wait_started = {}
         self.board_last_sample_at = {}
-        self.board_stream_retry_at = {}
-        self.last_demo_update = {}
+        self.board_valid_sample_count = {}
+        self._chart_dirty = True
 
         root = QVBoxLayout(self)
         root.setContentsMargins(PAGE_GUTTER, PAGE_TOP, PAGE_GUTTER, PAGE_BOTTOM)
-        root.setSpacing(SECTION_GAP)
+        root.setSpacing(18)
 
         # The target uses a free-standing row, not one large bordered card.
         # Each control remains an independent widget so Qt can distribute the
         # available width without QSS fighting a fixed parent geometry.
-        toolbar = QWidget()
+        toolbar = QFrame()
         toolbar.setObjectName("sensorLoggingBar")
         toolbar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         toolbar_layout = QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(0, 0, 0, 0)
-        toolbar_layout.setSpacing(SECTION_GAP)
+        toolbar_layout.setContentsMargins(20, 14, 20, 14)
+        toolbar_layout.setSpacing(24)
 
         log_configuration = QWidget()
         log_configuration.setObjectName("sensorLogConfiguration")
@@ -820,10 +1006,10 @@ class SensorsPage(QWidget):
         self.browse_button.setObjectName("sensorBrowseButton")
         self.browse_button.setIcon(make_folder_icon())
         self.browse_button.setIconSize(QSize(18, 18))
-        self.browse_button.setFixedSize(202, PRIMARY_CONTROL_HEIGHT)
+        self.browse_button.setFixedSize(204, PRIMARY_CONTROL_HEIGHT)
         self.browse_button.clicked.connect(self.choose_log_path)
 
-        default_log_path = Path.home() / "Documents" / "log_data.csv"
+        default_log_path = DEFAULT_SENSOR_LOG_PATH
         self.path_edit = QLineEdit(str(default_log_path).replace("\\", "/"))
         self.path_edit.setObjectName("sensorPathEdit")
         self.path_edit.setFixedHeight(PRIMARY_CONTROL_HEIGHT)
@@ -844,11 +1030,11 @@ class SensorsPage(QWidget):
         # Logging buttons
         self.start_button = QPushButton("Start Logging")
         self.start_button.setObjectName("sensorStartButton")
-        self.start_button.setFixedSize(150, PRIMARY_CONTROL_HEIGHT)
+        self.start_button.setFixedSize(158, PRIMARY_CONTROL_HEIGHT)
         self.start_button.clicked.connect(self.start_logging)
         self.stop_button = QPushButton("Stop")
         self.stop_button.setObjectName("sensorStopButton")
-        self.stop_button.setFixedSize(96, PRIMARY_CONTROL_HEIGHT)
+        self.stop_button.setFixedSize(122, PRIMARY_CONTROL_HEIGHT)
         self.stop_button.clicked.connect(self.stop_logging)
 
         configuration_layout.addWidget(self.browse_button)
@@ -866,7 +1052,7 @@ class SensorsPage(QWidget):
         actions_layout.setSpacing(0)
         actions_layout.addStretch(1)
         actions_layout.addWidget(self.start_button)
-        actions_layout.addSpacing(27)
+        actions_layout.addSpacing(18)
         actions_layout.addWidget(self.stop_button)
 
         toolbar_layout.addWidget(log_configuration, 21)
@@ -880,8 +1066,8 @@ class SensorsPage(QWidget):
         chart_panel = QFrame()
         chart_panel.setObjectName("sensorChartPanel")
         chart_layout = QVBoxLayout(chart_panel)
-        chart_layout.setContentsMargins(CARD_PADDING, CARD_PADDING, CARD_PADDING, CARD_PADDING)
-        chart_layout.setSpacing(SECTION_GAP)
+        chart_layout.setContentsMargins(24, 18, 18, 18)
+        chart_layout.setSpacing(14)
 
         chart_header = QHBoxLayout()
         chart_header.setContentsMargins(0, 0, 0, 0)
@@ -889,20 +1075,19 @@ class SensorsPage(QWidget):
         self.chart_title.setObjectName("sensorSectionTitle")
         chart_header.addWidget(self.chart_title)
         chart_header.addStretch()
-        self.legend_widget = QWidget()
-        self.legend_widget.setObjectName("sensorDynamicLegend")
-        self.legend_layout = QVBoxLayout(self.legend_widget)
-        self.legend_layout.setContentsMargins(0, 0, 0, 0)
-        self.legend_layout.setSpacing(8)
-        # Reserve the two-board legend height so adding MB2 never moves the plot.
-        self.legend_widget.setFixedHeight(32)
-        chart_header.addWidget(self.legend_widget)
+        self.pause_button = QPushButton("Pause")
+        self.pause_button.setObjectName("sensorPauseButton")
+        self.pause_button.setToolTip(
+            "Freeze the current chart view while sensor data continues in the background"
+        )
+        self.pause_button.clicked.connect(self.chart_pause)
+        chart_header.addSpacing(12)
+        chart_header.addWidget(self.pause_button)
 
         self.fit_button = QPushButton("Fit data")
         self.fit_button.setObjectName("sensorFitButton")
         self.fit_button.setToolTip("Show the complete buffered session")
         self.fit_button.clicked.connect(self.chart_fit_data)
-        chart_header.addSpacing(14)
         chart_header.addWidget(self.fit_button)
 
         self.auto_scale_button = QPushButton("Live view")
@@ -911,16 +1096,19 @@ class SensorsPage(QWidget):
         self.auto_scale_button.clicked.connect(self.chart_auto_scale)
         chart_header.addWidget(self.auto_scale_button)
 
-        self.axis_title = QLabel(f"Liquid Flow ({LIQUID_FLOW_UNIT})")
-        self.axis_title.setObjectName("sensorAxisTitle")
-        self.axis_title.setVisible(False)
+        # Selected measurements belong directly beneath the section title.
+        # The row is hidden completely until the user selects a measurement.
+        self.legend_widget = QWidget()
+        self.legend_widget.setObjectName("sensorDynamicLegend")
+        self.legend_layout = QHBoxLayout(self.legend_widget)
+        self.legend_layout.setContentsMargins(0, 0, 0, 0)
+        self.legend_layout.setSpacing(28)
+        self.legend_widget.setVisible(False)
 
         self.chart = SensorChart()
         self.chart.set_data([], [])
         chart_layout.addLayout(chart_header)
-        chart_layout.addSpacing(12)
-        chart_layout.addWidget(self.axis_title)
-        chart_layout.addSpacing(23)
+        chart_layout.addWidget(self.legend_widget)
         chart_layout.addWidget(self.chart, 1)
         content.addWidget(chart_panel, 21)
 
@@ -928,7 +1116,7 @@ class SensorsPage(QWidget):
         side.setObjectName("sensorSidePanel")
         side_layout = QVBoxLayout(side)
         side_layout.setContentsMargins(0, 0, 0, 0)
-        side_layout.setSpacing(12)
+        side_layout.setSpacing(16)
 
         self.cards_container = QWidget()
         self.cards_layout = QVBoxLayout(self.cards_container)
@@ -949,7 +1137,7 @@ class SensorsPage(QWidget):
         side_layout.addWidget(scroll, 1)
 
         filter_row = QHBoxLayout()
-        filter_row.setContentsMargins(0, 0, 8, 0)
+        filter_row.setContentsMargins(0, 0, 20, 0)
         filter_row.addStretch()
         self.hide_switch = ToggleSwitch(False)
         self.hide_switch.toggled.connect(self.set_hide_inactive)
@@ -969,6 +1157,7 @@ class SensorsPage(QWidget):
     @staticmethod
     def _legend_item(color, text):
         item = QWidget()
+        item.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         layout = QHBoxLayout(item)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
@@ -982,10 +1171,18 @@ class SensorsPage(QWidget):
         layout.addWidget(label)
         return item
 
+    def chart_pause(self):
+        self.chart.pause_view()
+
     def chart_fit_data(self):
         self.chart.fit_data()
 
     def chart_auto_scale(self):
+        # Returning to Live view also returns graph storage to the normal
+        # rolling ten-minute window. Trim first, rebuild the curves, then let
+        # the chart jump to the newest live window and resume auto-scaling.
+        self._trim_all_histories_to_live_window()
+        self.refresh_chart()
         self.chart.reset_zoom()
 
     @staticmethod
@@ -1104,30 +1301,15 @@ class SensorsPage(QWidget):
                 }
             )
 
-        if board_id not in self.selected_measurements:
-            preferred = "liquid_flow" if "liquid_flow" in active_ids else (
-                active_ids[0] if active_ids else (rows[0]["sensor_id"] if rows else None)
-            )
-            self.selected_measurements[board_id] = preferred
-        selected = self.selected_measurements.get(board_id)
+        # Connecting a board must never choose a graph measurement for the
+        # user. The serial sensor loop continues independently in the backend.
+        if board_id not in self.selected_measurement_sets:
+            self.selected_measurement_sets[board_id] = []
+            self.selected_measurements.pop(board_id, None)
+        selected = set(self.selected_measurement_sets.get(board_id, ()))
         for row in rows:
-            row["visible"] = row["sensor_id"] == selected
+            row["visible"] = row["sensor_id"] in selected
         return rows
-
-    @staticmethod
-    def _simulated_value(default, sensor_id, sample_index, board_index):
-        """Temporary source until SensorService supplies real samples."""
-
-        phase = sample_index + board_index * 2.4
-        amplitude = max(abs(default) * 0.012, 0.05)
-        if sensor_id.startswith("analog_"):
-            amplitude = 0.08
-        noise = random.uniform(-amplitude * 0.045, amplitude * 0.045)
-        offset = -board_index * max(abs(default) * 0.065, amplitude)
-        trend = amplitude * 0.58 * math.sin(phase / 12.0)
-        ripple = amplitude * 0.27 * math.sin(phase / 2.35)
-        fine_motion = amplitude * 0.12 * math.sin(phase / 1.18)
-        return default + offset + trend + ripple + fine_motion + noise
 
     def set_connected_boards(self, boards):
         """Create exactly one card per currently connected board."""
@@ -1147,12 +1329,17 @@ class SensorsPage(QWidget):
         for board_id in newly_added_ids:
             self.board_wait_started[board_id] = now
             self.board_last_sample_at.pop(board_id, None)
-            self.board_stream_retry_at.pop(board_id, None)
+            self.board_valid_sample_count[board_id] = 0
         for board_id in old_ids - set(new_ids):
             self.board_wait_started.pop(board_id, None)
             self.board_last_sample_at.pop(board_id, None)
-            self.board_stream_retry_at.pop(board_id, None)
+            self.board_valid_sample_count.pop(board_id, None)
         self.explicit_measurement_selections.intersection_update(new_ids)
+        self.selected_measurement_sets = {
+            board_id: selections
+            for board_id, selections in self.selected_measurement_sets.items()
+            if board_id in new_ids
+        }
         sensor_catalog = self._sensor_catalog(connected)
 
         for board_id in old_ids - set(new_ids):
@@ -1167,6 +1354,7 @@ class SensorsPage(QWidget):
                 self.expanded_board_id = None
 
         self.connected_boards = connected
+        maximum_selections = 2 if len(connected) == 1 else 1
         for index, board in enumerate(connected):
             board_id = self._board_id(board)
             card = self.cards_by_id.get(board_id)
@@ -1182,29 +1370,42 @@ class SensorsPage(QWidget):
                 card.expansion_requested.connect(self.set_card_expanded)
                 self.cards_by_id[board_id] = card
                 self.cards_layout.insertWidget(index, card)
-                # Adding a second board must not silently start a comparison.
-                # Its compatible measurement stays available, but the user
-                # must explicitly select it before MB2 is plotted.
-                if index > 0 and board_id in newly_added_ids:
+                # No board starts with a chart measurement selected. Sensor
+                # acquisition continues regardless of this presentation state.
+                if board_id in newly_added_ids:
                     self.selected_measurements.pop(board_id, None)
+                    self.selected_measurement_sets[board_id] = []
                     self.explicit_measurement_selections.discard(board_id)
                     card.clear_selected_measurement()
             else:
                 card.set_board_name(board.get("name", board_id))
+
+            card.set_max_selected(maximum_selections)
+            current_selections = self.selected_measurement_sets.get(board_id, [])
+            if len(current_selections) > maximum_selections:
+                current_selections = current_selections[:maximum_selections]
+                self.selected_measurement_sets[board_id] = current_selections
+                if current_selections:
+                    self.selected_measurements[board_id] = current_selections[0]
 
             card.set_status(board.get("sensor_status", "Waiting for sensor data…"))
 
             card.set_hide_inactive(self.hide_inactive)
             card.set_expanded(board_id == self.expanded_board_id)
             selected_sensor = self.selected_measurements.get(board_id)
-            if selected_sensor:
-                card.set_selected_measurement(selected_sensor)
-            elif board_id in newly_added_ids and index > 0:
+            selected_sensors = self.selected_measurement_sets.get(
+                board_id,
+                [selected_sensor] if selected_sensor else [],
+            )
+            if selected_sensors:
+                card.set_selected_measurements(selected_sensors)
+            elif board_id in newly_added_ids:
                 card.clear_selected_measurement()
             card.update_values(self.current_values)
 
         self._reserve_card_list_height()
         self._apply_comparison_state()
+        self._chart_dirty = True
         self.refresh_chart()
 
     def _reserve_card_list_height(self):
@@ -1234,6 +1435,7 @@ class SensorsPage(QWidget):
             card.set_expanded(card_id == self.expanded_board_id)
         self._reserve_card_list_height()
         self._apply_comparison_state()
+        self._chart_dirty = True
         self.refresh_chart()
 
     def set_active_board(self, board):
@@ -1244,24 +1446,61 @@ class SensorsPage(QWidget):
             for card_id, card in self.cards_by_id.items():
                 card.set_expanded(card_id == board_id)
             self._apply_comparison_state()
+        self._chart_dirty = True
         self.refresh_chart()
 
-    def set_measurement(self, board_id, sensor_id):
+    def set_primary_measurement(self, board_id, sensor_id):
+        """Make *sensor_id* the primary selected measurement for one board.
+
+        Workspace is a compact second view of the Sensors page and can display
+        one signal at a time.  Keep that compact selection in the same shared
+        SensorsPage selection model instead of maintaining a Workspace-only
+        copy.  When the full page already has a second comparison signal, keep
+        it where possible; only the primary slot is replaced.
+        """
+        if board_id not in self.cards_by_id:
+            return
+        if sensor_id not in MEASUREMENTS:
+            return
+
+        maximum_selections = 2 if len(self.connected_boards) == 1 else 1
+        existing = [
+            item
+            for item in self.selected_measurement_sets.get(board_id, ())
+            if item != sensor_id
+        ]
+        selections = [sensor_id] + existing[: max(0, maximum_selections - 1)]
+
+        self.selected_measurement_sets[board_id] = selections
+        self.selected_measurements[board_id] = sensor_id
+        self.explicit_measurement_selections.add(board_id)
+        self.cards_by_id[board_id].set_selected_measurements(selections)
+        self._apply_comparison_state()
+        self._chart_dirty = True
+        self.refresh_chart()
+
+    def set_measurement(self, board_id, sensor_id, checked=True):
         if board_id not in self.cards_by_id:
             return
 
-        if not sensor_id:
+        selections = list(self.selected_measurement_sets.get(board_id, ()))
+        maximum_selections = 2 if len(self.connected_boards) == 1 else 1
+        if checked:
+            if sensor_id not in selections and len(selections) < maximum_selections:
+                selections.append(sensor_id)
+        else:
+            selections = [item for item in selections if item != sensor_id]
+
+        self.selected_measurement_sets[board_id] = selections
+        if not selections:
             self.selected_measurements.pop(board_id, None)
             self.explicit_measurement_selections.discard(board_id)
-            self.cards_by_id[board_id].clear_selected_measurement()
-            self._apply_comparison_state()
-            self.refresh_chart()
-            return
-
-        self.selected_measurements[board_id] = sensor_id
-        self.explicit_measurement_selections.add(board_id)
-        self.cards_by_id[board_id].set_selected_measurement(sensor_id)
+        else:
+            self.selected_measurements[board_id] = selections[0]
+            self.explicit_measurement_selections.add(board_id)
+        self.cards_by_id[board_id].set_selected_measurements(selections)
         self._apply_comparison_state()
+        self._chart_dirty = True
         self.refresh_chart()
 
     def set_hide_inactive(self, checked):
@@ -1274,6 +1513,20 @@ class SensorsPage(QWidget):
         if active_id in self.cards_by_id:
             return active_id
         return self._board_id(self.connected_boards[0]) if self.connected_boards else None
+
+    def _set_sensor_detected(self, board, board_id, sensor_id, detected):
+        detected = bool(detected)
+        for index, sensor in enumerate(board.get("sensors") or ()):
+            if self._sensor_id(sensor, index) == sensor_id:
+                sensor["active"] = detected
+                sensor["available"] = detected
+        metadata = self.measurement_metadata.get(f"{board_id}:{sensor_id}")
+        if metadata is not None:
+            metadata["active"] = detected
+            metadata["available"] = detected
+        card = self.cards_by_id.get(board_id)
+        if card is not None:
+            card.set_sensor_available(sensor_id, detected)
 
     def _comparison_board_ids(self):
         """Return boards only when both have selected the same valid sensor."""
@@ -1309,7 +1562,12 @@ class SensorsPage(QWidget):
             self.selected_measurements.get(comparison_ids[0]) if comparison_ids else None
         )
         if comparison_id and primary_sensor:
+            self.selected_measurement_sets[comparison_ids[0]] = [primary_sensor]
+            primary_card = self.cards_by_id.get(comparison_ids[0])
+            if primary_card is not None:
+                primary_card.set_selected_measurements([primary_sensor])
             self.selected_measurements[comparison_id] = primary_sensor
+            self.selected_measurement_sets[comparison_id] = [primary_sensor]
 
         for board_id, card in self.cards_by_id.items():
             card.set_comparison_state(
@@ -1318,36 +1576,13 @@ class SensorsPage(QWidget):
             )
 
     def update_sensor_values(self):
-        """Drain real samples; generate values only for the explicit demo board."""
+        """Drain sensor samples from the connected physical Multiboards."""
 
         self._update_logging_status()
         changed = False
-        for board_index, board in enumerate(self.connected_boards):
+        for board in self.connected_boards:
             board_id = self._board_id(board)
             connection = board.get("connection")
-
-            if board.get("mode") == "demo":
-                now = datetime.now()
-                last_update = self.last_demo_update.get(board_id)
-                if last_update and (now - last_update).total_seconds() < 0.8:
-                    continue
-                if f"{board_id}:liquid_flow" in self.measurement_metadata:
-                    value = self._simulated_value(
-                        1.0,
-                        "liquid_flow",
-                        len(self.histories.get(f"{board_id}:liquid_flow", ())),
-                        board_index,
-                    )
-                    self._append_sample(
-                        board_id,
-                        "liquid_flow",
-                        value * 1000.0,
-                        now,
-                        None,
-                    )
-                    self.last_demo_update[board_id] = now
-                    changed = True
-                continue
 
             if connection is None:
                 continue
@@ -1357,8 +1592,6 @@ class SensorsPage(QWidget):
                     # Expose the same connection progression as Bartels:
                     # identify/configure first, then wait for real samples.
                     board["connection_state"] = getattr(connection, "state", "unknown")
-                    if board.get("sensor_status", "").startswith("Sensor error:"):
-                        continue
                     board["sensor_status"] = event.message
                 elif event.kind == "command" and event.message:
                     board["last_command"] = event.message
@@ -1371,10 +1604,29 @@ class SensorsPage(QWidget):
                     board["connection_state"] = "ready"
                 elif event.kind == "error":
                     board["sensor_status"] = f"Sensor error: {event.message or 'serial read failed'}"
+                elif event.kind == "sensor_retry":
+                    board["sensor_status"] = "Sensor not detected — retrying…"
+                    self.board_valid_sample_count[board_id] = 0
+                    self._set_sensor_detected(board, board_id, "liquid_flow", False)
+                elif event.kind == "diagnostic" and event.message:
+                    board["sensor_status"] = "Sensor bus error — retrying…"
+                    self.board_valid_sample_count[board_id] = 0
+                    self._set_sensor_detected(board, board_id, "liquid_flow", False)
                 sample = event.sample
                 if sample is None:
                     continue
-                board["sensor_status"] = "Liquid-flow stream active"
+                valid_count = self.board_valid_sample_count.get(board_id, 0) + 1
+                self.board_valid_sample_count[board_id] = valid_count
+                detected = valid_count >= 2
+                board["sensor_status"] = (
+                    "Liquid-flow sensor connected"
+                    if detected
+                    else "Checking sensor — validating data…"
+                )
+                if detected:
+                    self._set_sensor_detected(
+                        board, board_id, sample.sensor_id, True
+                    )
                 self.board_last_sample_at[board_id] = now_monotonic
                 self._append_sample(
                     board_id,
@@ -1383,46 +1635,43 @@ class SensorsPage(QWidget):
                     sample.timestamp.astimezone().replace(tzinfo=None),
                     sample.accumulated_volume_ul,
                     sample.raw_line,
+                    sample.raw_value_ml_min,
                 )
                 changed = True
 
-            status = str(board.get("sensor_status", ""))
-            if not status.startswith("Sensor error:"):
-                last_sample_at = self.board_last_sample_at.get(board_id)
-                if last_sample_at is None:
-                    waited = now_monotonic - self.board_wait_started.get(
-                        board_id, now_monotonic
-                    )
-                    if waited >= 12.0 and board_id not in self.board_stream_retry_at:
-                        try:
-                            retried = connection.retry_active_stream()
-                        except Exception as exc:
-                            board["sensor_status"] = f"Sensor error: stream retry failed: {exc}"
-                        else:
-                            if retried:
-                                self.board_stream_retry_at[board_id] = now_monotonic
-                                board["sensor_status"] = (
-                                    "Still waiting — flow stream requested again automatically"
-                                )
-                            else:
-                                board["sensor_status"] = (
-                                    "Waiting for sensor data — connection remains open"
-                                )
-                    elif board_id not in self.board_stream_retry_at:
-                        board["sensor_status"] = "Waiting for sensor data…"
-                elif now_monotonic - last_sample_at >= 5.0:
-                    board["sensor_status"] = (
-                        "Signal paused — waiting; connection remains open"
-                    )
+            last_sample_at = self.board_last_sample_at.get(board_id)
+            if last_sample_at is not None and now_monotonic - last_sample_at >= 5.0:
+                board["sensor_status"] = "Signal paused — reconnecting sensor stream…"
 
             card = self.cards_by_id.get(board_id)
             if card is not None:
                 card.set_status(board.get("sensor_status"))
 
-        if changed:
+        page_visible = self.isVisible()
+        if changed and page_visible:
             for board_id, card in self.cards_by_id.items():
                 card.update_values(self.current_values)
+
+        # Continue processing the backend on every tick, but keep the plot
+        # static when no new measurement or chart-selection state exists.
+        # The last received value therefore remains visible as a genuine
+        # flatline, including negative values such as -2.
+        if page_visible and (changed or self._chart_dirty):
+            self._chart_dirty = False
             self.refresh_chart()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.display_timer.setInterval(100)
+        if self._chart_dirty:
+            self._chart_dirty = False
+            self.refresh_chart()
+
+    def hideEvent(self, event):
+        # Keep draining serial events for logging, but at a lower rate and
+        # without rebuilding hidden cards/plots.
+        self.display_timer.setInterval(250)
+        super().hideEvent(event)
 
     def _append_sample(
         self,
@@ -1432,16 +1681,18 @@ class SensorsPage(QWidget):
         timestamp,
         accumulated_volume_ul,
         raw_line="",
+        raw_value_ml_min=None,
     ):
         key = f"{board_id}:{sensor_id}"
         metadata = self.measurement_metadata.get(key)
         if metadata is None:
             return
         self.histories.setdefault(key, []).append(float(value))
-        self.histories[key] = self.histories[key][-300:]
         self.history_timestamps.setdefault(key, []).append(timestamp)
-        self.history_timestamps[key] = self.history_timestamps[key][-300:]
+        if self.chart.is_live_view:
+            self._trim_history_to_live_window(key)
         self.current_values[key] = float(value)
+        self._chart_dirty = True
         if accumulated_volume_ul is not None:
             self.accumulated_volumes_ul[key] = float(accumulated_volume_ul)
         self.session_rows.append(
@@ -1453,6 +1704,7 @@ class SensorsPage(QWidget):
                 "unit": metadata.get("unit", ""),
                 "accumulated_volume_ul": accumulated_volume_ul,
                 "raw_line": raw_line,
+                "raw_value_ml_min": raw_value_ml_min,
             }
         )
         self._queue_log_sample(
@@ -1462,23 +1714,74 @@ class SensorsPage(QWidget):
             timestamp,
             accumulated_volume_ul,
             raw_line,
+            raw_value_ml_min,
             metadata,
         )
 
+    def _trim_history_to_live_window(self, key):
+        """Keep only the newest LIVE_HISTORY_SECONDS for one plotted series.
+
+        This is intentionally disabled while Pause or Fit Data is active.
+        CSV/session logging is independent and is never trimmed here.
+        """
+        timestamps = self.history_timestamps.get(key, [])
+        values = self.histories.get(key, [])
+        if not timestamps or not values:
+            return
+
+        # Histories and timestamps are appended together. If a legacy or
+        # malformed state ever makes their lengths differ, preserve matching
+        # pairs from the newest end before applying the time window.
+        if len(values) != len(timestamps):
+            pair_count = min(len(values), len(timestamps))
+            values[:] = values[-pair_count:]
+            timestamps[:] = timestamps[-pair_count:]
+            if not timestamps:
+                return
+
+        latest_seconds = timestamps[-1].timestamp()
+        cutoff_seconds = latest_seconds - self.LIVE_HISTORY_SECONDS
+        first_keep = 0
+        for first_keep, sample_time in enumerate(timestamps):
+            if sample_time.timestamp() >= cutoff_seconds:
+                break
+        else:
+            first_keep = len(timestamps) - 1
+
+        if first_keep > 0:
+            del timestamps[:first_keep]
+            del values[:first_keep]
+
+    def _trim_all_histories_to_live_window(self):
+        """Restore the normal rolling window when the user resumes Live view."""
+        for key in tuple(self.histories):
+            self._trim_history_to_live_window(key)
+
     def refresh_chart(self):
         comparison_ids = self._comparison_board_ids()
-        board_ids = list(comparison_ids) if comparison_ids else [self._display_board_id()]
-        board_ids = [board_id for board_id in board_ids if board_id is not None]
-        if not board_ids:
+        display_board_id = self._display_board_id()
+        if comparison_ids:
+            board_ids = list(comparison_ids)
+            sensor_ids = [self.selected_measurements.get(board_ids[0])]
+        else:
+            board_ids = [display_board_id] if display_board_id is not None else []
+            sensor_ids = list(
+                self.selected_measurement_sets.get(
+                    display_board_id,
+                    [self.selected_measurements.get(display_board_id)],
+                )
+            )
+        sensor_ids = [sensor_id for sensor_id in sensor_ids if sensor_id]
+        if not board_ids or not sensor_ids:
             self.chart.set_data([], [])
             self._set_legend([])
             return
 
         primary_id = board_ids[0]
-        sensor_id = self.selected_measurements.get(primary_id)
-        key = f"{primary_id}:{sensor_id}"
-        metadata = self.measurement_metadata.get(key)
-        if metadata is None:
+        primary_metadata = self.measurement_metadata.get(
+            f"{primary_id}:{sensor_ids[0]}"
+        )
+        if primary_metadata is None:
             self.chart.set_data([], [])
             self._set_legend([])
             return
@@ -1486,31 +1789,65 @@ class SensorsPage(QWidget):
         series = []
         legend = []
         comparison_colors = (BLUE, RED)
-        for index, board_id in enumerate(board_ids):
-            series_key = f"{board_id}:{sensor_id}"
-            if series_key not in self.histories:
-                continue
+        if comparison_ids:
+            sensor_id = sensor_ids[0]
+            for index, board_id in enumerate(board_ids):
+                series_key = f"{board_id}:{sensor_id}"
+                metadata = self.measurement_metadata.get(series_key)
+                if metadata is None or series_key not in self.histories:
+                    continue
+                board = next(
+                    (
+                        item
+                        for item in self.connected_boards
+                        if self._board_id(item) == board_id
+                    ),
+                    {},
+                )
+                name = board.get("name", board_id)
+                color = comparison_colors[index]
+                series.append(
+                    self._chart_series(series_key, color, axis="left")
+                )
+                legend.append((color, f"{name} — {metadata['label']}"))
+            axis_labels = (primary_metadata["axis_label"], "")
+        else:
             board = next(
-                (item for item in self.connected_boards if self._board_id(item) == board_id),
+                (
+                    item
+                    for item in self.connected_boards
+                    if self._board_id(item) == primary_id
+                ),
                 {},
             )
-            name = board.get("name", board_id)
-            color = comparison_colors[index] if comparison_ids else metadata["color"]
-            series.append({
-                "id": series_key,
-                "values": self.histories[series_key],
-                "timestamps": self.history_timestamps.get(series_key, []),
-                "color": color,
-            })
-            legend_text = f"{name} — {metadata['label']}"
-            legend.append((color, legend_text))
+            name = board.get("name", primary_id)
+            axis_labels_list = []
+            for sensor_id in sensor_ids[:2]:
+                series_key = f"{primary_id}:{sensor_id}"
+                metadata = self.measurement_metadata.get(series_key)
+                if metadata is None or series_key not in self.histories:
+                    continue
+                axis = "left" if not series else "right"
+                color = metadata["color"]
+                series.append(self._chart_series(series_key, color, axis=axis))
+                legend.append((color, f"{name} — {metadata['label']}"))
+                axis_labels_list.append(metadata["axis_label"])
+            axis_labels = tuple(axis_labels_list)
 
-        title = metadata["label"]
         self.chart_title.setText("Live sensor data")
-        self.axis_title.setText(metadata["axis_label"])
-        self.axis_title.setVisible(bool(series))
         self._set_legend(legend)
-        self.chart.set_data(series, [], metadata["axis_label"])
+        self.chart.set_data(series, [], axis_labels)
+
+    def _chart_series(self, series_key, color, *, axis):
+        return {
+            "id": series_key,
+            # Pass snapshots to pyqtgraph. The history lists continue to grow
+            # on every serial sample; sharing them would compare a list with itself.
+            "values": list(self.histories[series_key]),
+            "timestamps": list(self.history_timestamps.get(series_key, [])),
+            "color": color,
+            "axis": axis,
+        }
 
     def _set_legend(self, entries):
         while self.legend_layout.count():
@@ -1519,13 +1856,20 @@ class SensorsPage(QWidget):
                 item.widget().deleteLater()
         for color, text in entries:
             self.legend_layout.addWidget(self._legend_item(color, text))
+        self.legend_layout.addStretch(1)
+        self.legend_widget.setVisible(bool(entries))
 
     def choose_log_path(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Choose log file", self.path_edit.text(), "CSV files (*.csv)"
-        )
-        if path:
-            self.path_edit.setText(path)
+        # This button promises Explorer, so open the normal system folder
+        # instead of showing Qt's Save As dialog. The filename remains directly
+        # editable in the adjacent path field.
+        candidate = Path(self.path_edit.text().strip()).expanduser()
+        folder = candidate if candidate.is_dir() else candidate.parent
+        while not folder.exists() and folder != folder.parent:
+            folder = folder.parent
+        if not folder.exists():
+            folder = SENSOR_LOGS_DIR
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder.resolve())))
 
     def _sample_interval_seconds(self):
         text = self.rate_box.currentText()
@@ -1534,15 +1878,18 @@ class SensorsPage(QWidget):
     def _logger_series_labels(self):
         """Return Bartels-style column labels for currently connected boards."""
         labels = []
-        sensor_id = "liquid_flow"
         for board in self.connected_boards:
             board_id = self._board_id(board)
             if not board_id:
                 continue
-            metadata = self.measurement_metadata.get(f"{board_id}:{sensor_id}")
-            if metadata is None:
-                continue
-            labels.append(f"{board_id} - {metadata['label'].replace(' ', '')}")
+            for key, metadata in self.measurement_metadata.items():
+                if not key.startswith(f"{board_id}:") or not metadata.get(
+                    "available", False
+                ):
+                    continue
+                labels.append(
+                    f"{board_id} - {metadata['label'].replace(' ', '')}"
+                )
         return tuple(labels)
 
     def start_logging(self):
@@ -1569,7 +1916,7 @@ class SensorsPage(QWidget):
         self.chart.set_recording(True)
         self.start_button.setText("Starting…")
         self.start_button.setToolTip(
-            "CSV logging runs independently from the sensor stream and live graph"
+            "CSV logging runs independently; every raw sample is also saved to *_raw.csv"
         )
         self.start_button.setEnabled(False)
         self.path_edit.setEnabled(False)
@@ -1597,6 +1944,7 @@ class SensorsPage(QWidget):
         timestamp,
         accumulated_volume_ul,
         raw_line,
+        raw_value_ml_min,
         metadata,
     ):
         logger = self.csv_logger
@@ -1613,6 +1961,7 @@ class SensorsPage(QWidget):
                 unit=metadata["unit"],
                 accumulated_volume_ul=accumulated_volume_ul,
                 raw_line=raw_line,
+                raw_value_ml_min=raw_value_ml_min,
             )
         )
 
@@ -1645,6 +1994,51 @@ class SensorsPage(QWidget):
     def has_session_data(self):
         return bool(self.session_rows)
 
+    def session_runtime_idle(self) -> bool:
+        return not bool(self.logging)
+
+    def export_session_state(self):
+        return {
+            "log_path": self.path_edit.text(),
+            "sample_rate": self.rate_box.currentText(),
+            "hide_inactive": bool(self.hide_switch.isChecked()),
+            "selected_measurement_sets": {
+                str(board_id): list(sensor_ids)
+                for board_id, sensor_ids in self.selected_measurement_sets.items()
+            },
+        }
+
+    def apply_session_state(self, state):
+        """Restore presentation/logging configuration without starting logging."""
+        if not isinstance(state, dict) or self.logging:
+            return False
+        self.path_edit.setText(str(state.get("log_path", self.path_edit.text())))
+        rate = str(state.get("sample_rate", self.rate_box.currentText()))
+        index = self.rate_box.findText(rate)
+        if index >= 0:
+            self.rate_box.setCurrentIndex(index)
+        self.hide_switch.setChecked(bool(state.get("hide_inactive", False)))
+        selections = state.get("selected_measurement_sets", {})
+        if isinstance(selections, dict):
+            self.selected_measurement_sets = {
+                str(board_id): list(dict.fromkeys(sensor_ids or ()))[:2]
+                for board_id, sensor_ids in selections.items()
+                if isinstance(sensor_ids, (list, tuple))
+            }
+            self.selected_measurements = {
+                board_id: sensor_ids[0]
+                for board_id, sensor_ids in self.selected_measurement_sets.items()
+                if sensor_ids
+            }
+            for board_id, card in self.cards_by_id.items():
+                card.set_selected_measurements(
+                    self.selected_measurement_sets.get(board_id, [])
+                )
+        self._apply_comparison_state()
+        self._chart_dirty = True
+        self.refresh_chart()
+        return True
+
     def save_session(self):
         path, _ = QFileDialog.getSaveFileName(
             self, "Save sensor session", "sensor_session.json", "JSON files (*.json)"
@@ -1656,6 +2050,7 @@ class SensorsPage(QWidget):
             "sample_rate": self.rate_box.currentText(),
             "hide_inactive": self.hide_switch.isChecked(),
             "selected_measurements": self.selected_measurements,
+            "selected_measurement_sets": self.selected_measurement_sets,
         }
         Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -1672,10 +2067,22 @@ class SensorsPage(QWidget):
         if index >= 0:
             self.rate_box.setCurrentIndex(index)
         self.hide_switch.setChecked(payload.get("hide_inactive", False))
-        selections = payload.get("selected_measurements", {})
-        for board_id, sensor_id in selections.items():
+        selections = payload.get("selected_measurement_sets")
+        if not isinstance(selections, dict):
+            selections = {
+                board_id: [sensor_id]
+                for board_id, sensor_id in payload.get(
+                    "selected_measurements", {}
+                ).items()
+            }
+        for board_id, sensor_ids in selections.items():
             if board_id in self.cards_by_id:
-                self.selected_measurements[board_id] = sensor_id
-                self.cards_by_id[board_id].set_selected_measurement(sensor_id)
+                selected = list(dict.fromkeys(sensor_ids or ()))[:2]
+                self.selected_measurement_sets[board_id] = selected
+                if selected:
+                    self.selected_measurements[board_id] = selected[0]
+                else:
+                    self.selected_measurements.pop(board_id, None)
+                self.cards_by_id[board_id].set_selected_measurements(selected)
         self._apply_comparison_state()
         self.refresh_chart()

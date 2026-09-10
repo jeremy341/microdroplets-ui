@@ -1,5 +1,12 @@
+"""Home/dashboard page for the currently selected Multiboard.
+
+The application shell supplies active-board state through ``set_active_board``.
+See ``docs/USER_GUIDE.md`` for the shared page contract.
+"""
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -23,7 +30,7 @@ class HomePage(QWidget):
         # Main layout
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(PAGE_GUTTER, PAGE_TOP, PAGE_GUTTER, PAGE_BOTTOM)
-        main_layout.setSpacing(SECTION_GAP)
+        main_layout.setSpacing(18)
 
         # Empty state
         self.empty_state = QWidget()
@@ -76,19 +83,16 @@ class HomePage(QWidget):
         self.device_card.setObjectName("deviceCard")
         self.device_card.setSizePolicy(
             QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Maximum,
+            QSizePolicy.Policy.Fixed,
         )
+        self.device_card.setMinimumHeight(206)
+        self.device_card.setMaximumHeight(206)
 
         device_layout = QVBoxLayout(
             self.device_card
         )
-        device_layout.setContentsMargins(
-            CARD_PADDING,
-            CARD_PADDING,
-            CARD_PADDING,
-            14,
-        )
-        device_layout.setSpacing(10)
+        device_layout.setContentsMargins(28, 20, 28, 20)
+        device_layout.setSpacing(14)
 
         self.device_name = QLabel("Multiboard")
         self.device_name.setObjectName("deviceName")
@@ -135,10 +139,10 @@ class HomePage(QWidget):
             "informationLabel"
         )
 
-        self.device_status = QLabel("Connected")
-        self.device_status.setObjectName(
-            "informationValue"
-        )
+        self.device_status = QLabel()
+        self.device_status.setObjectName("informationValue")
+        self.device_status.setTextFormat(Qt.TextFormat.RichText)
+        self._set_status_display(True)
 
         self.device_port = QLabel("—")
         self.device_port.setObjectName(
@@ -198,55 +202,23 @@ class HomePage(QWidget):
             1,
         )
 
-        device_information_layout.addWidget(
-            pumps_label,
-            0,
-            2,
-        )
-        device_information_layout.addWidget(
-            self.device_pumps,
-            0,
-            3,
-        )
+        device_divider = QFrame()
+        device_divider.setObjectName("deviceInfoDivider")
+        device_divider.setFrameShape(QFrame.Shape.VLine)
+        device_information_layout.addWidget(device_divider, 0, 2, 3, 1)
 
-        device_information_layout.addWidget(
-            valves_label,
-            1,
-            2,
-        )
-        device_information_layout.addWidget(
-            self.device_valves,
-            1,
-            3,
-        )
+        device_information_layout.addWidget(pumps_label, 0, 3)
+        device_information_layout.addWidget(self.device_pumps, 0, 4)
+        device_information_layout.addWidget(valves_label, 1, 3)
+        device_information_layout.addWidget(self.device_valves, 1, 4)
+        device_information_layout.addWidget(sensors_label, 2, 3)
+        device_information_layout.addWidget(self.device_sensors, 2, 4)
 
-        device_information_layout.addWidget(
-            sensors_label,
-            2,
-            2,
-        )
-        device_information_layout.addWidget(
-            self.device_sensors,
-            2,
-            3,
-        )
-
-        device_information_layout.setColumnMinimumWidth(
-            0,
-            90,
-        )
-        device_information_layout.setColumnMinimumWidth(
-            2,
-            90,
-        )
-        device_information_layout.setColumnStretch(
-            1,
-            1,
-        )
-        device_information_layout.setColumnStretch(
-            3,
-            1,
-        )
+        device_information_layout.setColumnMinimumWidth(0, 110)
+        device_information_layout.setColumnMinimumWidth(2, 34)
+        device_information_layout.setColumnMinimumWidth(3, 110)
+        device_information_layout.setColumnStretch(1, 1)
+        device_information_layout.setColumnStretch(4, 1)
 
         device_layout.addWidget(self.device_name)
         device_layout.addLayout(
@@ -273,7 +245,7 @@ class HomePage(QWidget):
         ) = self.create_overview_card(
             title="Pumps",
             value="0",
-            description="available",
+            description="reported",
         )
 
         (
@@ -282,7 +254,7 @@ class HomePage(QWidget):
         ) = self.create_overview_card(
             title="Valves",
             value="0",
-            description="available",
+            description="reported",
         )
 
         (
@@ -291,7 +263,7 @@ class HomePage(QWidget):
         ) = self.create_overview_card(
             title="Sensors",
             value="0",
-            description="available",
+            description="reported",
         )
 
         overview_layout.addWidget(pumps_card, 1)
@@ -313,12 +285,7 @@ class HomePage(QWidget):
         activity_layout = QVBoxLayout(
             self.activity_card
         )
-        activity_layout.setContentsMargins(
-            CARD_PADDING,
-            34,
-            CARD_PADDING,
-            16,
-        )
+        activity_layout.setContentsMargins(20, 46, 20, 20)
 
         self.activity_log = QTextEdit()
         self.activity_log.setObjectName(
@@ -356,17 +323,14 @@ class HomePage(QWidget):
         card.setObjectName("overviewCard")
         card.setSizePolicy(
             QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Maximum,
+            QSizePolicy.Policy.Fixed,
         )
+        card.setMinimumHeight(164)
+        card.setMaximumHeight(164)
 
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(
-            CARD_PADDING,
-            32,
-            CARD_PADDING,
-            14,
-        )
-        card_layout.setSpacing(0)
+        card_layout.setContentsMargins(28, 50, 28, 22)
+        card_layout.setSpacing(6)
 
         value_label = QLabel(value)
         value_label.setObjectName(
@@ -385,48 +349,19 @@ class HomePage(QWidget):
 
         return card, value_label
 
-    @staticmethod
-    def count_items(value):
-        """Count list-based hardware data while supporting older saved values."""
-
-        if isinstance(value, int):
-            return value
-
-        if value is None:
-            return 0
-
-        try:
-            return len(value)
-        except TypeError:
-            return 0
-
     @classmethod
     def get_board_counts(cls, board):
-        drivers = board.get("drivers", [])
+        inventory = board.get("hardware_inventory")
+        if not isinstance(inventory, dict):
+            inventory = {}
 
-        driver_count = cls.count_items(drivers)
-        pump_channel_count = sum(
-            cls.count_items(driver.get("channels", []))
-            for driver in drivers
-            if isinstance(driver, dict)
-        )
-
-        # Compatibility with boards created by older versions of the UI.
-        if not drivers:
-            driver_count = cls.count_items(
-                board.get("pump_drivers", 0)
-            )
-            pump_channel_count = driver_count
-
-        valve_count = cls.count_items(
-            board.get(
-                "valves",
-                board.get("valve_drivers", 0),
-            )
-        )
-        sensor_count = cls.count_items(
-            board.get("sensors", 0)
-        )
+        # These are physical-hardware counts, not counts of cards or sensor
+        # definitions created by the UI.  Until the board exposes an explicit
+        # inventory response, keep them unknown rather than hardcoding 3/0/1.
+        driver_count = inventory.get("pump_drivers")
+        valve_count = inventory.get("valve_drivers")
+        sensor_count = inventory.get("sensors")
+        pump_channel_count = inventory.get("pump_channels")
 
         return {
             "drivers": driver_count,
@@ -434,6 +369,20 @@ class HomePage(QWidget):
             "valves": valve_count,
             "sensors": sensor_count,
         }
+
+    @staticmethod
+    def display_count(value):
+        return "—" if value is None else str(value)
+
+    def _set_status_display(self, connected):
+        if connected:
+            self.device_status.setText(
+                '<span style="color:#2FA77B;">●</span>&nbsp;&nbsp;Connected'
+            )
+        else:
+            self.device_status.setText(
+                '<span style="color:#AAB5B0;">●</span>&nbsp;&nbsp;Disconnected'
+            )
 
     def set_active_board(self, board):
         self.active_board = board
@@ -446,7 +395,7 @@ class HomePage(QWidget):
             self.device_name.setText(
                 board.get("name", "Multiboard")
             )
-            self.device_status.setText("Connected")
+            self._set_status_display(True)
             self.device_port.setText(
                 board.get("port", "—")
             )
@@ -454,33 +403,27 @@ class HomePage(QWidget):
                 board.get("firmware", "Unknown")
             )
 
-            self.device_pumps.setText(
-                str(counts["drivers"])
-            )
-            self.device_valves.setText(
-                str(counts["valves"])
-            )
-            self.device_sensors.setText(
-                str(counts["sensors"])
-            )
+            self.device_pumps.setText(self.display_count(counts["drivers"]))
+            self.device_valves.setText(self.display_count(counts["valves"]))
+            self.device_sensors.setText(self.display_count(counts["sensors"]))
 
             # The overview card labelled "Pumps" represents usable channels,
             # while the device details separately report driver modules.
             self.pumps_overview_value.setText(
-                str(counts["pump_channels"])
+                self.display_count(counts["pump_channels"])
             )
             self.valves_overview_value.setText(
-                str(counts["valves"])
+                self.display_count(counts["valves"])
             )
             self.sensors_overview_value.setText(
-                str(counts["sensors"])
+                self.display_count(counts["sensors"])
             )
 
         self.update_homepage_state()
 
     def clear_device_information(self):
         self.device_name.setText("Multiboard")
-        self.device_status.setText("Disconnected")
+        self._set_status_display(False)
         self.device_port.setText("—")
         self.device_firmware.setText("—")
         self.device_pumps.setText("—")

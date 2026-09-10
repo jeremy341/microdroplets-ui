@@ -21,6 +21,7 @@ def sample(timestamp, board="COM7", value=1.0):
         unit="µL/min",
         accumulated_volume_ul=250.0,
         raw_line=f"V={value}",
+        raw_value_ml_min=value / 1000.0,
     )
 
 
@@ -40,6 +41,15 @@ class AsyncCsvLoggerTests(unittest.TestCase):
             self.assertEqual(rows[1], ["Sample Rate:", "1", "samples/second"])
             self.assertEqual(rows[3], ["Timestamp", "COM7 - LiquidFlowRate"])
             self.assertEqual(rows[4], ["1", "2,500"])
+            raw_path = path.with_name("flow_raw.csv")
+            with raw_path.open(newline="", encoding="utf-8") as file:
+                raw_rows = list(csv.reader(file, delimiter=";"))
+            self.assertEqual(raw_rows[0][3:6], [
+                "Raw line", "Raw value (mL/min)", "Normalized value (µL/min)"
+            ])
+            self.assertEqual(raw_rows[1][3], "V=2.5")
+            self.assertEqual(raw_rows[1][4], "0.0025")
+            self.assertEqual(raw_rows[1][5], "2.5")
 
     def test_interval_is_independent_per_board_and_preserves_interval_peaks(self):
         with tempfile.TemporaryDirectory() as directory:

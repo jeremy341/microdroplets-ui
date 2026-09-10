@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Proprietary Dino-Lite runtime; code integrations may be committed, vendor binaries may not.
+vendor/dnx64/
+
+# Generated FluidicStudio runtime data
+user_data/*.json
+user_data/captures/*
+!user_data/captures/.gitkeep
+user_data/sensor_logs/*
+!user_data/sensor_logs/.gitkeep
+user_data/sessions/*
+!user_data/sessions/.gitkeep
+user_data/diagnostics/*
+!user_data/diagnostics/.gitkeep
+user_data/exports/*
+!user_data/exports/.gitkeep
+user_data/analytics/*
+!user_data/analytics/.gitkeep

@@ -9,7 +9,10 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication
+try:
+    from PyQt6.QtWidgets import QApplication
+except ModuleNotFoundError as exc:
+    raise unittest.SkipTest("PyQt6 is required for the offscreen UI integration tests") from exc
 
 from backend.serial_manager import BackendEvent, SensorSample
 from ui.pages.Sensors import SensorChart, SensorsPage
@@ -47,7 +50,10 @@ class SensorUiIntegrationTests(unittest.TestCase):
             raw_line="V=10.912",
         )
         connection = FakeConnection(
-            [BackendEvent("measurement", "COM7", sample=sample)]
+            [
+                BackendEvent("measurement", "COM7", sample=sample),
+                BackendEvent("measurement", "COM7", sample=sample),
+            ]
         )
         board = {
             "name": "MB1",
@@ -74,13 +80,16 @@ class SensorUiIntegrationTests(unittest.TestCase):
         page.update_sensor_values()
 
         key = "COM7:liquid_flow"
-        self.assertEqual(page.histories[key], [10912.0])
-        self.assertEqual(len(page.history_timestamps[key]), 1)
+        self.assertEqual(page.histories[key], [10912.0, 10912.0])
+        self.assertEqual(len(page.history_timestamps[key]), 2)
         self.assertAlmostEqual(page.accumulated_volumes_ul[key], 125.0)
-        self.assertEqual(board["sensor_status"], "Liquid-flow stream active")
+        self.assertEqual(board["sensor_status"], "Liquid-flow sensor connected")
         self.assertEqual(page.chart.series[0]["id"], key)
-        self.assertEqual(page.chart.series[0]["values"], [10912.0])
-        self.assertEqual(page.chart.series[0]["timestamps"], [timestamp.astimezone().replace(tzinfo=None)])
+        self.assertEqual(page.chart.series[0]["values"], [10912.0, 10912.0])
+        self.assertEqual(page.chart.series[0]["timestamps"], [
+            timestamp.astimezone().replace(tzinfo=None),
+            timestamp.astimezone().replace(tzinfo=None),
+        ])
 
     def test_liquid_flow_uses_bartels_microlitre_display_unit(self):
         timestamp = datetime.now(timezone.utc)
@@ -105,6 +114,96 @@ class SensorUiIntegrationTests(unittest.TestCase):
         self.assertEqual(page.measurement_metadata["COM8:liquid_flow"]["unit"], "µL/min")
         self.assertEqual(page.histories["COM8:liquid_flow"], [8374.0])
         self.assertIn("µL/min", page.measurement_metadata["COM8:liquid_flow"]["axis_label"])
+
+    def test_single_board_starts_unselected_with_every_measurement_selectable(self):
+        page = SensorsPage()
+        self.addCleanup(page.deleteLater)
+        board = {
+            "name": "MB1", "port": "COM7", "mode": "serial",
+            "connection": FakeConnection([]),
+            "sensors": [{
+                "id": "liquid_flow", "label": "Liquid Flow Rate",
+                "unit": "µL/min", "active": False, "available": False,
+            }],
+        }
+
+        page.set_connected_boards([board])
+        card = page.cards_by_id["COM7"]
+
+        self.assertEqual(page.selected_measurement_sets["COM7"], [])
+        self.assertNotIn("COM7", page.selected_measurements)
+        self.assertTrue(all(not box.isChecked() for box in card.selection_boxes.values()))
+        self.assertTrue(all(box.isEnabled() for box in card.selection_boxes.values()))
+        self.assertTrue(all(row.isEnabled() for row in card.sensor_rows_by_id.values()))
+
+    def test_single_board_allows_two_and_keeps_selected_rows_enabled(self):
+        page = SensorsPage()
+        self.addCleanup(page.deleteLater)
+        board = {
+            "name": "MB1", "port": "COM7", "mode": "serial",
+            "connection": FakeConnection([]),
+            "sensors": [],
+        }
+        page.set_connected_boards([board])
+        card = page.cards_by_id["COM7"]
+
+        card.selection_boxes["liquid_flow"].setChecked(True)
+        card.selection_boxes["pressure"].setChecked(True)
+
+        self.assertEqual(
+            page.selected_measurement_sets["COM7"],
+            ["liquid_flow", "pressure"],
+        )
+        self.assertTrue(card.selection_boxes["liquid_flow"].isEnabled())
+        self.assertTrue(card.selection_boxes["pressure"].isEnabled())
+        self.assertFalse(card.selection_boxes["gas_flow"].isEnabled())
+        self.assertTrue(card.sensor_rows_by_id["liquid_flow"].isEnabled())
+        self.assertTrue(card.sensor_rows_by_id["pressure"].isEnabled())
+        self.assertFalse(card.sensor_rows_by_id["gas_flow"].isEnabled())
+
+        card.selection_boxes["liquid_flow"].setChecked(False)
+
+        self.assertEqual(page.selected_measurement_sets["COM7"], ["pressure"])
+        self.assertTrue(card.selection_boxes["gas_flow"].isEnabled())
+        self.assertTrue(card.sensor_rows_by_id["gas_flow"].isEnabled())
+
+    def test_sensor_detection_does_not_auto_select_a_measurement(self):
+        timestamp = datetime.now(timezone.utc)
+        samples = [
+            SensorSample(
+                timestamp=timestamp + timedelta(milliseconds=index),
+                elapsed_seconds=float(index),
+                board_port="COM7",
+                sensor_id="liquid_flow",
+                value=-2000.0,
+                unit="µL/min",
+                accumulated_volume_ul=0.0,
+                raw_line="V=-2",
+            )
+            for index in range(2)
+        ]
+        connection = FakeConnection([
+            BackendEvent("measurement", "COM7", sample=sample)
+            for sample in samples
+        ])
+        board = {
+            "name": "MB1", "port": "COM7", "mode": "serial",
+            "connection": connection,
+            "sensors": [{
+                "id": "liquid_flow", "label": "Liquid Flow Rate",
+                "unit": "µL/min", "active": False, "available": False,
+            }],
+        }
+        page = SensorsPage()
+        self.addCleanup(page.deleteLater)
+        page.set_connected_boards([board])
+
+        page.update_sensor_values()
+
+        self.assertEqual(page.histories["COM7:liquid_flow"], [-2000.0, -2000.0])
+        self.assertEqual(page.selected_measurement_sets["COM7"], [])
+        self.assertNotIn("COM7", page.selected_measurements)
+        self.assertTrue(page.cards_by_id["COM7"].selection_boxes["liquid_flow"].isEnabled())
 
     def test_live_chart_uses_rolling_30_second_window(self):
         chart = SensorChart()
@@ -151,6 +250,138 @@ class SensorUiIntegrationTests(unittest.TestCase):
         x_low, x_high = chart._view_box.viewRange()[0]
         self.assertAlmostEqual(x_high - x_low, 30.0, places=2)
 
+    def test_logging_state_does_not_leave_live_view(self):
+        chart = SensorChart()
+        self.addCleanup(chart.deleteLater)
+        self.assertTrue(chart._follow_live)
+        chart.set_recording(True)
+        chart.set_recording(False)
+        self.assertTrue(chart._follow_live)
+
+    def test_pause_freezes_exact_viewport_while_curve_data_continues(self):
+        chart = SensorChart()
+        self.addCleanup(chart.deleteLater)
+        start = datetime.now().replace(microsecond=0)
+        timestamps = [start + timedelta(seconds=index) for index in range(61)]
+        chart.set_data(
+            [{
+                "id": "COM7:liquid_flow",
+                "values": [float(index) for index in range(61)],
+                "timestamps": timestamps,
+                "color": "#0E55FF",
+            }],
+            [],
+        )
+        chart._plot.setXRange(timestamps[20].timestamp(), timestamps[40].timestamp(), padding=0)
+        chart._view_box.setYRange(10.0, 50.0, padding=0)
+        before_x = tuple(chart._view_box.viewRange()[0])
+        before_y = tuple(chart._view_box.viewRange()[1])
+
+        chart.pause_view()
+        extended_timestamps = timestamps + [start + timedelta(seconds=index) for index in range(61, 81)]
+        chart.set_data(
+            [{
+                "id": "COM7:liquid_flow",
+                "values": [float(index) for index in range(81)],
+                "timestamps": extended_timestamps,
+                "color": "#0E55FF",
+            }],
+            [],
+        )
+
+        after_x = tuple(chart._view_box.viewRange()[0])
+        after_y = tuple(chart._view_box.viewRange()[1])
+        self.assertEqual(before_x, after_x)
+        self.assertEqual(before_y, after_y)
+        self.assertFalse(chart._follow_live)
+        self.assertTrue(chart._manual_scale)
+        self.assertEqual(len(chart.series[0]["values"]), 81)
+
+        chart.resume_live()
+        self.assertTrue(chart._follow_live)
+        self.assertFalse(chart._manual_scale)
+        live_x = chart._view_box.viewRange()[0]
+        self.assertAlmostEqual(live_x[1], extended_timestamps[-1].timestamp(), places=2)
+
+    def test_live_history_keeps_ten_minutes_by_time_not_sample_count(self):
+        page = SensorsPage()
+        self.addCleanup(page.deleteLater)
+        key = "COM7:liquid_flow"
+        page.measurement_metadata[key] = {
+            "label": "Liquid Flow Rate", "precision": 3,
+            "unit": "µL/min", "active": True,
+        }
+        start = datetime.now().replace(microsecond=0)
+        page._append_sample("COM7", "liquid_flow", 1.0, start, 0.0)
+        page._append_sample("COM7", "liquid_flow", 2.0, start + timedelta(seconds=599), 0.0)
+        page._append_sample("COM7", "liquid_flow", 3.0, start + timedelta(seconds=601), 0.0)
+
+        self.assertEqual(page.histories[key], [2.0, 3.0])
+        self.assertEqual(len(page.history_timestamps[key]), 2)
+
+    def test_pause_preserves_old_history_until_live_view_resumes(self):
+        page = SensorsPage()
+        self.addCleanup(page.deleteLater)
+        key = "COM7:liquid_flow"
+        page.measurement_metadata[key] = {
+            "label": "Liquid Flow Rate", "precision": 3,
+            "unit": "µL/min", "active": True,
+        }
+        start = datetime.now().replace(microsecond=0)
+        page._append_sample("COM7", "liquid_flow", 1.0, start, 0.0)
+        page.chart.pause_view()
+        page._append_sample("COM7", "liquid_flow", 2.0, start + timedelta(seconds=601), 0.0)
+
+        self.assertEqual(page.histories[key], [1.0, 2.0])
+
+        page.chart_auto_scale()
+        self.assertEqual(page.histories[key], [2.0])
+        self.assertTrue(page.chart.is_live_view)
+
+    def test_one_board_can_track_two_measurements_with_two_axes(self):
+        board = {
+            "name": "MB1",
+            "port": "COM7",
+            "mode": "serial",
+            "connection": FakeConnection([]),
+            "sensors": [
+                {"id": "liquid_flow", "active": True, "available": True},
+                {"id": "pressure", "active": True, "available": True},
+                {"id": "gas_flow", "active": True, "available": True},
+            ],
+        }
+        page = SensorsPage()
+        self.addCleanup(page.deleteLater)
+        page.set_connected_boards([board])
+        page.set_active_board(board)
+        page.set_measurement("COM7", "liquid_flow", True)
+        page.set_measurement("COM7", "pressure", True)
+        timestamp = datetime.now()
+        page._append_sample("COM7", "liquid_flow", 1200.0, timestamp, 0.0)
+        page._append_sample("COM7", "pressure", 20.0, timestamp, None)
+        page.refresh_chart()
+
+        self.assertEqual(
+            page.selected_measurement_sets["COM7"],
+            ["liquid_flow", "pressure"],
+        )
+        self.assertEqual(
+            [series["axis"] for series in page.chart.series],
+            ["left", "right"],
+        )
+        self.assertFalse(
+            page.cards_by_id["COM7"].selection_boxes["gas_flow"].isEnabled()
+        )
+
+    def test_open_file_explorer_uses_system_folder_window(self):
+        page = SensorsPage()
+        self.addCleanup(page.deleteLater)
+        with tempfile.TemporaryDirectory() as directory:
+            page.path_edit.setText(os.path.join(directory, "flow.csv"))
+            with patch("ui.pages.Sensors.QDesktopServices.openUrl") as open_url:
+                page.choose_log_path()
+        open_url.assert_called_once()
+
     def test_sensors_page_has_no_live_window_selector(self):
         page = SensorsPage()
         self.addCleanup(page.deleteLater)
@@ -164,7 +395,7 @@ class SensorUiIntegrationTests(unittest.TestCase):
         self.assertLess(low, -100.0)
         self.assertGreater(high, -20.0)
 
-    def test_missing_first_sample_retries_once_without_locking(self):
+    def test_ui_does_not_issue_an_uncoordinated_stream_retry(self):
         connection = FakeConnection([])
         board = {
             "name": "MB1",
@@ -186,8 +417,7 @@ class SensorUiIntegrationTests(unittest.TestCase):
             page.update_sensor_values()
             page.update_sensor_values()
 
-        self.assertEqual(connection.retry_count, 1)
-        self.assertIn("requested again", board["sensor_status"])
+        self.assertEqual(connection.retry_count, 0)
 
     def test_sample_after_pause_recovers_active_status(self):
         timestamp = datetime.now(timezone.utc)
@@ -204,13 +434,20 @@ class SensorUiIntegrationTests(unittest.TestCase):
         page = SensorsPage()
         self.addCleanup(page.deleteLater)
         page.set_connected_boards([board])
-        connection.events.append(BackendEvent(
-            "measurement", "COM7",
-            sample=SensorSample(timestamp, 1.0, "COM7", "liquid_flow",
-                                2500.0, "µL/min", 100.0, "V=2.5"),
-        ))
+        connection.events.extend([
+            BackendEvent(
+                "measurement", "COM7",
+                sample=SensorSample(timestamp, 1.0, "COM7", "liquid_flow",
+                                    2500.0, "µL/min", 100.0, "V=2.5"),
+            ),
+            BackendEvent(
+                "measurement", "COM7",
+                sample=SensorSample(timestamp, 1.5, "COM7", "liquid_flow",
+                                    -2.0, "µL/min", 100.0, "V=-0.002"),
+            ),
+        ])
         page.update_sensor_values()
-        self.assertEqual(board["sensor_status"], "Liquid-flow stream active")
+        self.assertEqual(board["sensor_status"], "Liquid-flow sensor connected")
 
     def test_logging_queues_only_new_samples_and_does_not_use_a_log_timer(self):
         page = SensorsPage()
@@ -255,3 +492,5 @@ class SensorUiIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# Pause behavior is intentionally covered in the PyQt integration suite above.

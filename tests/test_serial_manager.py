@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import queue
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from backend.protocol import Calibration
 from backend.serial_manager import MultiboardConnection
@@ -24,6 +24,8 @@ class FakeSerial:
 
     def write(self, payload: bytes) -> int:
         self.writes.append(payload)
+        if payload == b"POFF\r\n":
+            self.reads.put(b"<< OK\r\n")
         return len(payload)
 
     def flush(self) -> None:
@@ -36,6 +38,19 @@ class FakeSerial:
 
     def close(self) -> None:
         self.is_open = False
+
+
+class SensorHandshakeSerial(FakeSerial):
+    def write(self, payload: bytes) -> int:
+        self.writes.append(payload)
+        if payload == b"V\r\n":
+            self.reads.put(b"Multiboard Ready\r\n")
+        elif payload in {b"DFOFF\r\n", b"L0\r\n", b"DFON\r\n", b"POFF\r\n"}:
+            self.reads.put(b"OK\r\n")
+            if payload == b"DFON\r\n":
+                # Zero and negative flow are both valid sensor evidence.
+                self.reads.put(b"V=0.000\r\nV=-0.002\r\n")
+        return len(payload)
 
 
 class SerialManagerTests(unittest.TestCase):
@@ -74,7 +89,10 @@ class SerialManagerTests(unittest.TestCase):
         board.open()
         board.start_sensor("liquid_flow", Calibration.WATER)
         board.close()
-        self.assertEqual(fake.writes, [b"L0\r\n", b"DFON\r\n", b"DFOFF\r\n"])
+        self.assertEqual(
+            fake.writes,
+            [b"L0\r\n", b"DFON\r\n", b"POFF\r\n", b"DFOFF\r\n"],
+        )
         self.assertFalse(fake.is_open)
 
     def test_fragmented_samples_are_parsed_and_integrated(self) -> None:
@@ -91,9 +109,9 @@ class SerialManagerTests(unittest.TestCase):
         events = board.drain_events()
         samples = [event.sample for event in events if event.sample is not None]
         self.assertEqual(len(samples), 2)
-        # The first single sample is intentionally treated as unarmed flow;
-        # integration begins after the second confirmed sample.
-        self.assertAlmostEqual(samples[-1].accumulated_volume_ul, 25.0, places=6)
+        # Integration uses the two received raw values directly:
+        # 6000 µL/min × 0.5 s / 60 = 50 µL.
+        self.assertAlmostEqual(samples[-1].accumulated_volume_ul, 50.0, places=6)
         board.close()
 
     def test_switching_sensor_stops_previous_stream(self) -> None:
@@ -107,7 +125,7 @@ class SerialManagerTests(unittest.TestCase):
             fake.writes,
             [
                 b"L0\r\n", b"DFON\r\n", b"DFOFF\r\n",
-                b"DPON\r\n", b"DPOFF\r\n",
+                b"DPON\r\n", b"POFF\r\n", b"DPOFF\r\n",
             ],
         )
 
@@ -135,7 +153,7 @@ class SerialManagerTests(unittest.TestCase):
         self.assertEqual(len(samples), 2)
         self.assertAlmostEqual(samples[-1].accumulated_volume_ul, 0.0)
 
-    def test_motion_spike_is_rejected_and_signed_flow_is_preserved(self) -> None:
+    def test_signed_flow_is_preserved_without_filtering(self) -> None:
         fake = FakeSerial()
         board = MultiboardConnection("COM7", fake)
         board.active_sensor_id = "liquid_flow"
@@ -145,15 +163,36 @@ class SerialManagerTests(unittest.TestCase):
             board._handle_line("V=-1000.0")
         events = board.drain_events()
         samples = [event.sample for event in events if event.sample is not None]
-        self.assertEqual(samples[0].value, 0.0)
+        self.assertEqual(samples[0].value, -1000000.0)
         self.assertLess(samples[1].value, 0.0)
         self.assertLess(samples[2].value, 0.0)
         self.assertLess(samples[-1].accumulated_volume_ul, 0.0)
         board.close()
 
-    def test_raw_mode_bypasses_filter_but_keeps_normalized_units_and_integration(self) -> None:
+    def test_acknowledged_detection_accepts_zero_and_negative_samples(self) -> None:
+        fake = SensorHandshakeSerial()
+        board = MultiboardConnection("COM7", fake)
+        board.open()
+        self.assertTrue(
+            board.initialize_liquid_flow(
+                max_attempts=1,
+                monitor_stream=False,
+                sample_timeout_seconds=1.0,
+            )
+        )
+        samples = [
+            event.sample for event in board.drain_events() if event.sample is not None
+        ]
+        self.assertEqual([sample.value for sample in samples], [0.0, -2.0])
+        self.assertEqual(
+            fake.writes[:4],
+            [b"V\r\n", b"DFOFF\r\n", b"L0\r\n", b"DFON\r\n"],
+        )
+        board.close()
+
+    def test_default_mode_keeps_normalized_units_and_integrates_raw_values(self) -> None:
         fake = FakeSerial()
-        board = MultiboardConnection("COM7", fake, filter_enabled=False)
+        board = MultiboardConnection("COM7", fake)
         board.active_sensor_id = "liquid_flow"
         with patch("backend.serial_manager.monotonic", side_effect=[10.0, 10.5]):
             board._handle_line("V=60")
@@ -162,27 +201,21 @@ class SerialManagerTests(unittest.TestCase):
         self.assertEqual([sample.value for sample in samples], [60000.0, 60000.0])
         self.assertAlmostEqual(samples[-1].accumulated_volume_ul, 500.0, places=6)
 
-    def test_filtered_mode_remains_default(self) -> None:
-        board = MultiboardConnection("COM7", FakeSerial())
-        self.assertTrue(board.filter_enabled)
-
     @patch("backend.serial_manager.sleep")
     @patch("backend.serial_manager.MultiboardConnection")
-    def test_hardware_handshake_uses_proven_delays(self, board_type, sleep_mock) -> None:
+    def test_compatibility_helper_uses_acknowledged_initialization(self, board_type, sleep_mock) -> None:
         board = board_type.return_value
         result = open_and_start_liquid_flow("COM7")
 
         self.assertIs(result, board)
         board.open.assert_called_once_with()
-        board.request_firmware.assert_called_once_with()
-        board.start_sensor.assert_called_once_with(
-            "liquid_flow",
-            Calibration.WATER,
-            calibration_delay_seconds=0.5,
+        board.initialize_liquid_flow.assert_called_once_with(
+            max_attempts=3,
+            monitor_stream=False,
         )
         self.assertEqual(
             [call.args[0] for call in sleep_mock.call_args_list],
-            [1.0, 1.0],
+            [1.0],
         )
 
 

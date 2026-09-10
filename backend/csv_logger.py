@@ -1,4 +1,9 @@
-"""Non-blocking CSV logging in FluidicStudio's compact CSV format."""
+"""Non-blocking CSV logging in FluidicStudio's compact CSV format.
+
+The logger consumes normalized samples on its own worker thread so sensor
+streaming and the Qt event loop are not blocked by disk I/O.  See
+``docs/DEVELOPER_GUIDE.md`` for the complete sensor/logging pipeline.
+"""
 
 from __future__ import annotations
 
@@ -23,10 +28,11 @@ class LogSample:
     unit: str
     accumulated_volume_ul: float | None
     raw_line: str = ""
+    raw_value_ml_min: float | None = None
 
 
 class AsyncCsvLogger:
-    """Write filtered samples on a worker thread using Bartels' layout.
+    """Write received samples on a worker thread using Bartels' layout.
 
     FluidicStudio writes a short metadata preamble followed by a semicolon-
     separated table.  The first column is a sample number, not a wall-clock
@@ -36,6 +42,7 @@ class AsyncCsvLogger:
 
     def __init__(self, path: Path, interval_seconds: float, series_labels: tuple[str, ...] = ()) -> None:
         self.path = Path(path)
+        self.raw_path = self.path.with_name(f"{self.path.stem}_raw{self.path.suffix}")
         self.interval_seconds = max(0.1, float(interval_seconds))
         self.series_labels = tuple(series_labels)
         self._queue: queue.Queue[LogSample | None] = queue.Queue()
@@ -102,8 +109,23 @@ class AsyncCsvLogger:
         interval_started: dict[tuple[str, str], datetime] = {}
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("w", newline="", encoding="utf-8") as file:
+            with (
+                self.path.open("w", newline="", encoding="utf-8") as file,
+                self.raw_path.open("w", newline="", encoding="utf-8") as raw_file,
+            ):
                 writer = csv.writer(file, delimiter=";", lineterminator="\n")
+                raw_writer = csv.writer(raw_file, delimiter=";", lineterminator="\n")
+                raw_writer.writerow(
+                    (
+                        "Timestamp",
+                        "Board",
+                        "Sensor",
+                        "Raw line",
+                        "Raw value (mL/min)",
+                        "Normalized value (µL/min)",
+                        "Accumulated volume (µL)",
+                    )
+                )
                 start_time = datetime.now().astimezone().replace(microsecond=0)
                 writer.writerow(("Logging Start Time:", start_time.strftime("%Y-%m-%d %H:%M:%S")))
                 samples_per_second = 1.0 / self.interval_seconds
@@ -139,6 +161,22 @@ class AsyncCsvLogger:
                         ):
                             write_sample(pending_sample)
                         break
+
+                    # The sidecar is intentionally unsampled and unrounded:
+                    # every parsed firmware value remains available for
+                    # diagnostics, while the regular CSV keeps Bartels' layout.
+                    raw_writer.writerow(
+                        (
+                            sample.timestamp.isoformat(timespec="milliseconds"),
+                            sample.board_id,
+                            sample.sensor_id,
+                            sample.raw_line,
+                            "" if sample.raw_value_ml_min is None else format(sample.raw_value_ml_min, ".15g"),
+                            format(sample.value, ".15g"),
+                            "" if sample.accumulated_volume_ul is None else format(sample.accumulated_volume_ul, ".15g"),
+                        )
+                    )
+                    raw_file.flush()
 
                     series_id = (sample.board_id, sample.sensor_id)
                     current = pending.get(series_id)

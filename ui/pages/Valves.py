@@ -5,7 +5,7 @@ from ui.design_tokens import PAGE_BOTTOM, PAGE_GUTTER, PAGE_TOP
 
 
 class ValvesPage(QWidget):
-    """Placeholder for valve controls outside the current pump MVP."""
+    """Reserved page for valve hardware that is not implemented in this release."""
 
     def __init__(self):
         super().__init__()

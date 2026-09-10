@@ -1,8 +1,12 @@
-"""Bartels Multiboard2 sensor commands and strict response parsing.
+"""Bartels Multiboard2 command builders and strict response parsing.
 
 The Multiboard firmware sends newline-delimited text.  A plain ``V=`` value is
 associated with the one stream currently active on that board.  Named markers
 are also accepted for firmware versions that identify the sensor explicitly.
+
+This module is the single source of truth for command syntax used by normal
+pump control. Driver/channel capabilities come from ``driver_capabilities``.
+See ``docs/DEVELOPER_GUIDE.md`` before adding or changing board commands.
 """
 
 from __future__ import annotations
@@ -11,6 +15,13 @@ import math
 import re
 from dataclasses import dataclass
 from enum import Enum
+
+from backend.driver_capabilities import (
+    DRIVER_CHANNELS,
+    capabilities_for_driver_index,
+    configured_amplitude_limits,
+    configured_frequency_limits,
+)
 
 
 COMMAND_TERMINATOR = b"\r\n"
@@ -59,6 +70,25 @@ SENSORS: dict[str, SensorDefinition] = {
 
 CALIBRATION_COMMANDS = {Calibration.WATER: "L0", Calibration.IPA: "L1"}
 
+# Pump-control mappings from Bartels Software Manual v1.6, section 2.1.6.
+# Driver 0 owns CH1-CH4, driver 1 owns CH5, and driver 2 owns CH6.  The
+# physical CH5 driver type is supplied by data/driver_config.json.
+PUMP_CHANNELS = range(1, 7)
+PUMP_DRIVER_CHANNELS = DRIVER_CHANNELS
+DRIVER_FREQUENCY_LIMITS = configured_frequency_limits()
+DRIVER_AMPLITUDE_LIMITS = configured_amplitude_limits()
+WAVEFORM_CODES = {
+    "Sinus": 0,
+    "Sinus-Like": 1,
+    "Rect-Like": 2,
+    "Rect.": 3,
+}
+WAVEFORM_ALIASES = {
+    "Sine-rectangular 1": "Sinus-Like",
+    "Sine-rectangular 2": "Rect-Like",
+    "Rectangular": "Rect.",
+}
+
 
 @dataclass(frozen=True)
 class ParsedMeasurement:
@@ -100,18 +130,119 @@ def encode_command(command: str) -> bytes:
     return clean.encode("ascii") + COMMAND_TERMINATOR
 
 
+def pump_state_command(channel: int, enabled: bool) -> str:
+    """Build a documented per-channel pump ON/OFF command."""
+
+    if type(channel) is not int or channel not in PUMP_CHANNELS:
+        raise ValueError("Pump channel must be between 1 and 6")
+    if type(enabled) is not bool:
+        raise ValueError("Pump state must be a boolean")
+    return f"P{channel}{'ON' if enabled else 'OFF'}"
+
+
+def pump_amplitude_command(channel: int, amplitude_vpp: int) -> str:
+    """Build a documented pump amplitude command in peak-to-peak volts."""
+
+    if type(channel) is not int or channel not in PUMP_CHANNELS:
+        raise ValueError("Pump channel must be between 1 and 6")
+    if type(amplitude_vpp) is not int or not 0 <= amplitude_vpp <= 250:
+        raise ValueError("Pump amplitude must be between 0 and 250 Vpp")
+    return f"P{channel}V{amplitude_vpp}"
+
+
+def driver_amplitude_command(
+    driver_index: int, channel: int, amplitude_vpp: int
+) -> str:
+    """Build an amplitude command after applying the selected driver's limits."""
+
+    if driver_index not in DRIVER_AMPLITUDE_LIMITS:
+        raise ValueError("Driver index must be 0, 1, or 2")
+    if channel not in PUMP_DRIVER_CHANNELS[driver_index]:
+        raise ValueError(f"Channel {channel} does not belong to driver {driver_index}")
+    minimum, maximum = DRIVER_AMPLITUDE_LIMITS[driver_index]
+    if type(amplitude_vpp) is not int or not minimum <= amplitude_vpp <= maximum:
+        raise ValueError(
+            f"Driver {driver_index} amplitude must be between {minimum} and {maximum} Vpp"
+        )
+    return pump_amplitude_command(channel, amplitude_vpp)
+
+
+def driver_frequency_command(driver_index: int, frequency_hz: int) -> str:
+    """Build the documented shared-frequency command for one driver group."""
+
+    if type(driver_index) is not int or driver_index not in PUMP_DRIVER_CHANNELS:
+        raise ValueError("Driver index must be 0, 1, or 2")
+    minimum, maximum = DRIVER_FREQUENCY_LIMITS[driver_index]
+    if type(frequency_hz) is not int or not minimum <= frequency_hz <= maximum:
+        raise ValueError(
+            f"Driver {driver_index} frequency must be between {minimum} and {maximum} Hz"
+        )
+    return f"F{driver_index}={frequency_hz}"
+
+
+def driver_waveform_command(driver_index: int, waveform: str) -> str:
+    """Build a carrier-shape command only for drivers that support CS<d>."""
+
+    capabilities = capabilities_for_driver_index(driver_index)
+    if not capabilities.supports_carrier_waveform:
+        raise ValueError(
+            f"Signal shape is not supported for {capabilities.display_name} "
+            f"on driver {driver_index}"
+        )
+    try:
+        waveform_code = WAVEFORM_CODES.get(
+            WAVEFORM_ALIASES.get(waveform, waveform)
+        )
+        if waveform_code is None:
+            raise KeyError(waveform)
+    except KeyError as exc:
+        raise ValueError(f"Unsupported waveform: {waveform}") from exc
+    return f"CS{driver_index}={waveform_code}"
+
+
+def pump_start_commands(
+    driver_index: int,
+    frequency_hz: int,
+    waveform: str,
+    channel: int,
+    amplitude_vpp: int,
+) -> tuple[str, ...]:
+    """Return the deterministic configure-then-start sequence used by the UI."""
+
+    if channel not in PUMP_DRIVER_CHANNELS.get(driver_index, ()):
+        raise ValueError(f"Channel {channel} does not belong to driver {driver_index}")
+    commands = [driver_frequency_command(driver_index, frequency_hz)]
+    if capabilities_for_driver_index(driver_index).supports_carrier_waveform:
+        commands.append(driver_waveform_command(driver_index, waveform))
+    commands.extend(
+        (
+            driver_amplitude_command(driver_index, channel, amplitude_vpp),
+            pump_state_command(channel, True),
+        )
+    )
+    return tuple(commands)
+
+
 def parse_reply(line: str, active_sensor_id: str | None = None) -> ParsedReply:
     """Parse one complete reply without guessing numbers from unknown lines."""
 
     clean = line.strip()
     if not clean:
         return ParsedReply("empty", line)
-    if clean.upper() == "OK":
+    # The board commonly prefixes console replies with ``<<``.
+    normalized = re.sub(r"^<+\s*", "", clean).strip()
+    if normalized.upper() == "OK":
         return ParsedReply("ack", clean)
-    if clean.upper().startswith(("ERR", "ERROR")):
+    if normalized.lower().startswith("multiboard") and normalized.lower().endswith(" ready"):
+        return ParsedReply("boot", clean, message=normalized)
+    if clean.startswith("[E][Wire.cpp:") and "i2c" in clean.lower():
+        # ESP32 Wire diagnostics describe a sensor-bus condition; they are not
+        # Multiboard command rejections and must remain visible as diagnostics.
+        return ParsedReply("diagnostic", clean, message=clean)
+    if clean.upper().startswith(("FAIL", "ERR", "ERROR", "WRONG COMMAND")):
         return ParsedReply("error", clean, message=clean)
-    if clean.lower().startswith("multiboard"):
-        return ParsedReply("firmware", clean, message=clean)
+    if normalized.lower().startswith("multiboard"):
+        return ParsedReply("firmware", clean, message=normalized)
 
     sensor_id: str | None = None
     value_text: str | None = None

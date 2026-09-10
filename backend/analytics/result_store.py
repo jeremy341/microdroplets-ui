@@ -1,0 +1,61 @@
+"""Persistence and cache helpers for Analytics results/settings."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from .models import ANALYZER_VERSION, AnalysisConfig, AnalysisResult
+
+
+class ResultStore:
+    def __init__(self, analytics_dir: Path, settings_path: Path) -> None:
+        self.analytics_dir = Path(analytics_dir)
+        self.settings_path = Path(settings_path)
+        self.analytics_dir.mkdir(parents=True, exist_ok=True)
+
+    def save_settings(self, config: AnalysisConfig) -> None:
+        self.settings_path.parent.mkdir(parents=True, exist_ok=True)
+        temp = self.settings_path.with_suffix(self.settings_path.suffix + ".tmp")
+        temp.write_text(json.dumps(config.to_dict(), indent=2), encoding="utf-8")
+        temp.replace(self.settings_path)
+
+    def load_settings(self) -> AnalysisConfig:
+        if not self.settings_path.is_file():
+            return AnalysisConfig()
+        try:
+            data = json.loads(self.settings_path.read_text(encoding="utf-8"))
+            return AnalysisConfig.from_dict(data)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return AnalysisConfig()
+
+    def result_directory(self, video_path: Path) -> Path:
+        safe_name = video_path.stem.replace(" ", "_")
+        return self.analytics_dir / safe_name
+
+    def save_result(self, result: AnalysisResult) -> Path:
+        directory = self.result_directory(result.metadata.path)
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / "analysis.json"
+        temp = target.with_suffix(".json.tmp")
+        temp.write_text(json.dumps(result.to_dict(), separators=(",", ":")), encoding="utf-8")
+        temp.replace(target)
+        return target
+
+    def load_cached(self, video_path: Path, expected_cache_key: str | None = None) -> AnalysisResult | None:
+        target = self.result_directory(video_path) / "analysis.json"
+        if not target.is_file():
+            return None
+        try:
+            result = AnalysisResult.from_dict(json.loads(target.read_text(encoding="utf-8")))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError, KeyError):
+            return None
+        if result.analyzer_version != ANALYZER_VERSION:
+            return None
+        if not result.metadata.path.exists():
+            return None
+        if result.metadata.path.resolve() != video_path.resolve():
+            return None
+        if expected_cache_key and result.cache_key != expected_cache_key:
+            return None
+        return result
