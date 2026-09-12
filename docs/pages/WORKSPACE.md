@@ -22,7 +22,9 @@ It does not embed Analytics or Valves in the current release.
 
 A selected pair starts at approximately 50/50. The center `QSplitter` is draggable afterward.
 
-The splitter is a presentation choice only; it is not part of hardware/session state beyond Workspace layout preferences.
+The splitter is a presentation choice only. The current runtime starts around
+50/50 and does not provide a reliable persisted ratio contract; do not use it as
+experiment metadata.
 
 Workspace stays open when switching to another page and back.
 
@@ -110,6 +112,10 @@ Changes must propagate both ways:
 
 Synchronization includes more than numeric values. It also includes connection state, running/ownership state, pending operations, locks, and relevant error state.
 
+The intended contract includes errors, but the current implementation does not
+mirror every Camera error/status transition into Workspace. Treat the full page
+as the richer diagnostic surface when camera startup or recording fails.
+
 Workspace-specific state should be limited to presentation choices such as selected panel types and which two pump channels are displayed.
 
 ## Backend files
@@ -149,3 +155,7 @@ When adding a Workspace feature, first ask:
 > Which existing page/backend state is this a view of?
 
 If the answer is “none”, creating new hardware state inside Workspace is probably the wrong architecture.
+
+At the implementation boundary, Workspace currently imports concrete full-page
+widgets. This is a coupling hotspot for future UI replacement; preserve the
+shared backend/service contract when extracting a non-Qt frontend.

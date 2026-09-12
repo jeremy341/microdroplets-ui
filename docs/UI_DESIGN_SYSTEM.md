@@ -2,7 +2,8 @@
 
 This document records the visual and interaction conventions used across
 FluidicStudio so a future developer does not have to infer the design system
-from a 60k+ line-equivalent QSS/UI surface.
+from a large QSS/UI surface whose effective styling is split across QSS, design
+tokens, and page-local code.
 
 The visual sources of truth are:
 
@@ -11,6 +12,11 @@ style.qss
 ui/design_tokens.py
 ui/pages/*.py
 ```
+
+This is a documentation source-of-truth statement, not proof that the sources
+are currently fully centralized: Analytics still contains inline stylesheet
+rules, and `style.qss` has selector/redefinition drift that should be reconciled
+before a future UI redesign.
 
 ## 1. Design direction
 
@@ -50,6 +56,11 @@ panels must remain usable at roughly half the content width.
 
 Prefer these shared values when adding structurally similar layouts instead of
 creating a new random spacing scale.
+
+Audit note: `ui/design_tokens.py` defines a standard control height of 38 px,
+while parts of `style.qss` describe a 48 px standard control. Treat the token
+file as the intended value and verify the rendered result before documenting a
+new component as compliant.
 
 ## 3. Main palette
 
@@ -215,6 +226,9 @@ initial split ≈ 50/50
 → chosen ratio is not constantly forced back to 50/50
 ```
 
+The initial ratio is a runtime presentation default, not guaranteed persisted
+experiment state.
+
 Each compact panel should prioritize the controls needed during an experiment.
 Do not try to reproduce every full-page control at half width.
 
@@ -306,6 +320,12 @@ Examples:
   selector.
 
 Only expose controls whose semantics are known and backed by the service layer.
+
+Current UI audit limitations include mouse-only custom Sensors controls,
+drag-only Analytics setup, missing names for several custom Workspace controls,
+and focus outlines that are inconsistent or suppressed by QSS. These are UI
+backlog items; this document does not authorize changing them in a backend-only
+fix.
 
 ## 17. Adding a new component
 

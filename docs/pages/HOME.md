@@ -18,6 +18,10 @@ When no board is selected, Home shows an empty-state message. With a connected b
 - sensor count/summary;
 - recent application activity.
 
+Hardware inventory counts can intentionally display `—` when the application
+has no authoritative inventory result. A configured driver list or a connected
+serial port is not proof that every physical driver, valve or sensor exists.
+
 ## Intended use
 
 Use Home to answer “what is connected and what is the application currently aware of?” before entering a subsystem page.

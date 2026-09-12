@@ -21,6 +21,11 @@ The release suite was intentionally pruned from many historical V-number/layout
 checks while keeping behavioral tests for hardware semantics, data handling and
 Workspace synchronization.
 
+There is currently no committed CI workflow or coverage threshold. The local
+suite contains source-only tests plus optional PyQt/vendor/hardware tests; a
+missing dependency can silently reduce the executed coverage. Keep those lanes
+explicit in validation reports.
+
 ## 2. What deserves a regression test
 
 Always add a test when a bug could silently alter:
@@ -135,6 +140,10 @@ Most shipped tools are designed to avoid starting pumps.
 Never label a tool “read-only” if it sends `POFF` or another state-changing
 command, even if that command is safe.
 
+“Read-only” also means no camera property writes, no image/file output, and no
+sensor stream/calibration commands. A tool that initializes or reconfigures
+hardware is state-changing even when it does not start a pump.
+
 ## 5. `hardware_health_check.py`
 
 Default mode is passive. It checks:
@@ -198,7 +207,9 @@ Use these when measurement framing/presence is uncertain.
 
 ## 10. `dnx64_probe.py`
 
-Read-only DNX64 attachment diagnostic.
+DNX64 attachment diagnostic. Treat it as state-changing until the initialization
+path is isolated: the current implementation initializes the vendor backend with
+controls enabled and may write current exposure values.
 
 Checks:
 
@@ -207,12 +218,16 @@ Checks:
 - whether DNX64 loads;
 - device enumeration/identity/control attachment state.
 
-It does not intentionally change LED/exposure values.
+Do not run it during an experiment. Verify the exact implementation before
+calling it passive.
 
 ## 11. `camera_backend_smoke_test.py`
 
 Exercises the production camera backend and can verify that a camera opens and
 produces frames/capabilities.
+
+It also writes a PNG as part of the smoke test, so it is not read-only. Keep its
+output in a disposable diagnostics location and use a safe camera state.
 
 Use it before debugging Camera.py if the preview/control problem might be below
 Qt.
@@ -228,6 +243,10 @@ These are hardware-changing diagnostics. They intentionally exercise exposure
 across selected percentages/resolutions and record measurements.
 
 Do not run them during an experiment.
+
+The sensor stream probes are also reversible state-changing tools: they send
+`DFOFF`, calibration and `DFON` commands before stopping the stream. They do not
+start pumps, but they can affect an active sensor workflow.
 
 ## 13. Recommended troubleshooting order
 
@@ -300,3 +319,9 @@ set or small approved fixtures.
 Most backend logic can run in CI without hardware through mocks/fakes. Direct Qt
 integration requires PyQt6 and an appropriate headless setup. Real hardware
 validation remains a separate layer and should be recorded as such.
+
+The current source-only test environment also exposes a packaging assumption:
+`tests/test_application_paths.py` expects a bundled `vendor/dnx64/DNX64.dll`,
+while the repository intentionally does not track proprietary vendor files.
+Maintain separate source-only, installed-runtime, and connected-hardware jobs
+until that fixture contract is corrected.

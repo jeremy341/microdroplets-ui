@@ -22,7 +22,7 @@ The editor exposes parameters such as:
 - template;
 - minimum amplitude;
 - maximum amplitude;
-- increment or samples-per-cycle depending on template;
+- increment or a template-derived samples-per-cycle value;
 - step/cycle timing;
 - cycles;
 - driver frequency.
@@ -32,6 +32,11 @@ The editor exposes parameters such as:
 The smooth mathematical preview is not what the serial driver receives directly. `backend/waveform_engine.py` turns a definition into discrete amplitude steps.
 
 A driver can quantize/limit those values. Always inspect the generated steps/statistics when changing waveform generation.
+
+The current UI offers four generated templates (Triangle, Sine, Sawtooth and
+Square). Samples/steps are derived from the template and timing rules; they are
+not an unrestricted editable raw sample buffer. Treat generated statistics as
+read-only evidence of what will be sent.
 
 ## Saved waveform library
 

@@ -24,6 +24,10 @@ The Multiboard and camera are independent USB devices. A camera problem is not a
 
 The application uses the board through `backend/serial_manager.py` and command builders/parsers in `backend/protocol.py`.
 
+The topology below is a software model of the intended setup. A configured
+driver/channel map is not automatic physical inventory and must not be presented
+as bench evidence without a retained hardware result.
+
 Current serial framing:
 
 ```text
@@ -166,6 +170,9 @@ data/driver_config.json = authoritative
 ```
 
 The experimental `Driver:` fingerprint returned by the Multiboard is not yet trusted as a universal driver map. Read [Driver Detection](DRIVER_DETECTION.md) before changing this policy.
+
+Use the evidence labels in the [hardware validation matrix](developer/HARDWARE_VALIDATION_MATRIX.md): software-tested, bench-validated,
+vendor-described, or planned.
 
 ## 11. Where to change hardware behavior
 

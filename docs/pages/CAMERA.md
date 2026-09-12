@@ -1,11 +1,11 @@
 # Camera Page
 
-The Camera page is the complete UI for camera discovery, live preview, capture, recording, and validated Dino-Lite controls.
+The Camera page is the complete UI for camera discovery, live preview, capture, recording, and available Dino-Lite controls. A control being present in the vendor API is not by itself bench validation.
 
 For backend/threading details, read [Camera Engine](../CAMERA_ENGINE.md).
 
 
-For runtime architecture see [Camera Engine](../CAMERA_ENGINE.md); for every DNX64 feature exposed by the bundled wrapper and its integration status see [DNX64 Reference](../DNX64_REFERENCE.md).
+For runtime architecture see [Camera Engine](../CAMERA_ENGINE.md); for every DNX64 feature exposed by the wrapper and its integration status see [DNX64 Reference](../DNX64_REFERENCE.md). The proprietary DNX64 runtime is external/ignored and is not bundled in this repository.
 
 ## Main controls
 
@@ -39,13 +39,13 @@ The application does not expose arbitrary FPS values for this profile.
 
 ## Exposure
 
-With Auto enabled, manual exposure is disabled. With Auto off, the slider controls the practical validated percentage mapping implemented by the camera backend.
+With Auto enabled, manual exposure is disabled. With Auto off, the slider controls the practical percentage mapping implemented by the camera backend. Exact readback still depends on the camera model and DNX64 runtime.
 
 Property writes are queued/throttled so slider interaction does not block Qt's GUI thread.
 
 ## Brightness
 
-Brightness is presented as a percentage even though underlying driver representations can differ. The backend handles scale/readback details.
+Brightness is presented as a percentage even though underlying driver representations can differ. The backend handles scale/readback details; the current DNX64 brightness binding needs exact-device verification.
 
 ## LED
 
@@ -83,6 +83,11 @@ Treat OpenCV and DNX64 as separate paths:
 4. inspect control readback.
 
 Do not repeatedly reopen the video stream as the first response to a control-only failure.
+
+Known lifecycle limitations include startup/stop races, camera-worker reads after
+close/replacement, swallowed read exceptions, and recorder cleanup after a
+writer failure. Capture, Record and Stop are safe no-ops while stopped even
+though their current enabled-state presentation is not always explicit.
 
 ## Relevant tests
 

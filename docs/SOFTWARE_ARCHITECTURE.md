@@ -41,6 +41,12 @@ Pages display and request changes to shared backend objects.
 `app.py` is deliberately an orchestration layer. Low-level command syntax should
 not migrate into it.
 
+Current boundary caveat: `app.py` is a large composition root with import-time
+path/configuration setup and process-wide registries. The globals used for board
+records, active selection and page coordination are migration constraints, not a
+typed public runtime API. A future refactor should introduce an explicit
+`BoardRuntime`/application context before splitting the module.
+
 ## 3. One service bundle per physical Multiboard
 
 When a COM port is connected, `connect_board()` creates:
@@ -119,6 +125,11 @@ Workspace-only state is presentation state, such as:
 
 It should not contain a second copy of physical channel state.
 
+The present UI implementation still imports concrete full-page widgets from
+Workspace. That coupling is acceptable for the current PyQt shell but is the
+main boundary to preserve when introducing a future TypeScript/webview or other
+frontend.
+
 ## 6. Core sources of truth
 
 | Concern | Authoritative location |
@@ -194,6 +205,11 @@ There are two broad synchronization patterns.
 Subscribers are observers only. Exceptions in a subscriber must not kill the
 serial reader.
 
+The current reader-failure path can leave the connection marked open while
+command methods remain callable, and the normal event queue is unbounded. A
+reader exception must therefore be treated as a transport/lifecycle fault, not
+as a recoverable UI notification alone.
+
 ### Shared object/model reads
 
 Pump/Wave/Camera views read state from the same backend service/page runtime.
@@ -231,6 +247,11 @@ stop Wave runners
 
 If `POFF` is not acknowledged, normal disconnect is blocked. The connection is
 kept open so the user can retry rather than falsely reporting a safe state.
+
+Some shutdown/disconnect work is synchronous and can block the Qt thread. The
+top-level `aboutToQuit` path also does not currently make a failed `close()`
+result a process-exit gate. Physical OFF/POFF acknowledgement is the safety
+boundary; application termination is not.
 
 ## 11. Sessions do not restore active outputs
 

@@ -2,6 +2,9 @@
 
 The Valves page is intentionally a placeholder in the current release.
 
+This is a user-visible placeholder only; no valve command, inventory or safe
+hardware state is currently implemented.
+
 
 For planned implementation boundaries, see [Future Roadmap](../FUTURE_ROADMAP.md) and [Hardware Limitations](../HARDWARE_LIMITATIONS.md).
 

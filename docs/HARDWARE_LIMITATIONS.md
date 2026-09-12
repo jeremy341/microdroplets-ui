@@ -92,7 +92,13 @@ The UI exposes LED ON/OFF. LED intensity/FLC is **not** exposed because it was n
 
 OpenCV preview can work while DNX64 controls fail. This means the video path and control path must be debugged separately.
 
-The DNX64 files are vendor software. Review `vendor/dnx64/License.txt` and vendor redistribution terms before publishing them outside the intended project/lab context.
+The DNX64 runtime is external vendor software and is not tracked in this
+repository. Review the vendor license and redistribution terms before supplying
+`vendor/dnx64/License.txt` or any DLL outside the intended project/lab context.
+
+Camera startup/stop can race with the worker, camera read failures are not
+always surfaced to the UI, and the DNX64 brightness/auto-exposure paths require
+exact-device readback. Preview success alone is not control-path validation.
 
 ## 7. Analytics limitations
 
@@ -107,6 +113,11 @@ With calibration, scale must match the source resolution and optical setup. A mi
 
 A counted physical event can remain valid as an event even when its geometry is rejected. Do not simplify `counted` and `valid geometry` into one flag.
 
+Analytics cache keys can collide by filename stem, cancelled/partial work can
+look like a normal cache hit, truncated video can be treated as complete, and
+automatic ROI can mutate persistent settings. Inspect source/cache metadata
+before trusting a result.
+
 ## 8. Valves
 
 Valve control is not implemented in this release. The Valves page is a reserved placeholder and must not be presented as a functional hardware subsystem.
@@ -120,6 +131,7 @@ FluidicStudio is laboratory control software, not a certified safety controller.
 - Do not assume a configuration file proves what is physically installed.
 - Keep a safe way to stop the experiment outside the application when appropriate.
 - Treat unacknowledged commands and lost connections conservatively.
+- Treat application exit without an acknowledged OFF/POFF as an unknown state.
 
 
 ## Related future work

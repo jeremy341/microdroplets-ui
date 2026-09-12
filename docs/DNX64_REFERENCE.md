@@ -1,7 +1,9 @@
 # Dino-Lite DNX64 API Reference and Integration Status
 
-This document inventories the DNX64 functionality represented by the bundled
-FluidicStudio wrapper and explains what is actually used by the product.
+This document inventories the DNX64 functionality represented by the
+FluidicStudio wrappers and explains what is actually used by the product. The
+proprietary DNX64 runtime is an external prerequisite; it is not bundled or
+tracked in this repository.
 
 It exists so a future developer does not expose a Dino-Lite feature merely
 because a ctypes method happens to exist.
@@ -27,14 +29,14 @@ vendor SDK/runtime may be distributed separately from the public Python wrapper.
 | File | Purpose |
 | --- | --- |
 | `backend/dnx64_vendor.py` | low-level vendor-derived ctypes wrapper; broad API inventory |
-| `backend/dnx64_api.py` | smaller typed wrapper for core production functions |
+| `backend/dnx64_api.py` | smaller typed wrapper for core functions; not the sole production source of truth |
 | `backend/camera_service.py` | production policy, DNX64 attachment/readback and OpenCV coordination |
-| `vendor/dnx64/DNX64.dll` | vendor runtime |
-| `vendor/dnx64/DNX32.dll` | vendor runtime dependency retained beside DNX64 |
-| `vendor/dnx64/libusbK.dll` | vendor runtime dependency |
-| `vendor/dnx64/License.txt` | vendor license text |
-| `vendor/dnx64/ReadMe.txt` | vendor runtime notes |
-| `tools/dnx64_probe.py` | read-only attachment/identity diagnostic |
+| `vendor/dnx64/DNX64.dll` | optional user-supplied vendor runtime; not tracked |
+| `vendor/dnx64/DNX32.dll` | optional vendor runtime dependency; not tracked |
+| `vendor/dnx64/libusbK.dll` | optional vendor runtime dependency; not tracked |
+| `vendor/dnx64/License.txt` | vendor notice to retain with an external runtime |
+| `vendor/dnx64/ReadMe.txt` | vendor runtime notes supplied with an external runtime |
+| `tools/dnx64_probe.py` | attachment/identity diagnostic; current initialization is not guaranteed passive |
 
 ## 3. Runtime resolution order
 
@@ -49,7 +51,7 @@ cannot initialize on the current driver stack.
 
 ## 4. Important vendor runtime notes
 
-The bundled vendor note says the target setup needs:
+The vendor note says the target setup needs:
 
 ```text
 DNX64.dll
@@ -126,8 +128,9 @@ GetExposureValue(index)
 SetExposureValue(index, value)
 ```
 
-FluidicStudio maps a practical UI percentage to a validated raw range rather
-than exposing the entire theoretical driver range directly.
+FluidicStudio maps a practical UI percentage to a software policy range rather
+than exposing the entire theoretical driver range directly. The exact camera
+model/runtime still requires bench readback before this is called validated.
 
 ### LED ON/OFF
 
@@ -267,15 +270,19 @@ signature, while the SDK header/runtime path used here expects:
 SetVideoProcAmp(property_index, new_value)
 ```
 
-`camera_service.py` patches the ctypes signature after loading the DLL. Do not
-remove this patch unless the bundled wrapper/runtime has been replaced and
-verified.
+`camera_service.py` patches the ctypes signature after loading the DLL. The
+current audit found that the brightness range call can still pass the first
+property pointer with the wrong value/pointer shape on the real path, producing
+fallback ranges or failed writes while fake tests pass. Verify the exact header,
+argument types and readback on the target runtime before calling brightness
+support complete.
 
 ### Broad vendor wrapper vs production wrapper
 
-`dnx64_vendor.py` is intentionally close to the vendor API and contains methods
-that have not been tested in FluidicStudio. `dnx64_api.py` is a narrower typed
-wrapper for core operations.
+`dnx64_vendor.py` is intentionally close to the vendor API and is the current
+low-level wrapper used by `camera_service.py`. `dnx64_api.py` is a narrower typed
+wrapper for core operations and should not be assumed to describe the entire
+production call path.
 
 Application behavior belongs in `camera_service.py`, not in the vendor wrapper.
 
@@ -298,6 +305,9 @@ checking bit `0x02` for FLC support in `camera_service.py`.
 
 A capability bit means “the SDK/model advertises this feature,” not “our current
 UI implementation has been validated.” Keep those states separate.
+
+Auto-exposure enable currently needs readback verification; a successful setter
+return is not enough evidence that the camera accepted the mode.
 
 ## 11. Camera model currently targeted
 
@@ -346,3 +356,8 @@ python tools/exposure_resolution_diagnostic.py
 The public GitHub wrapper and a distributor-provided DNX64 SDK package may not
 always carry the same version number at the same time. Prefer the header/runtime
 that accompanies the actual SDK package being integrated.
+
+All of the probes above may initialize hardware or change camera settings. Read
+[Testing and Diagnostics](TESTING_DIAGNOSTICS.md) before running them and keep
+the proprietary DLLs outside Git unless redistribution has been explicitly
+cleared.

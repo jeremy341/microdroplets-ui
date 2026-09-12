@@ -108,6 +108,10 @@ Recommended process:
 5. compare all recordings, not one successful clip;
 6. preserve human-readable rejection reasons.
 
+The recordings and result manifests are not tracked, so this historical
+benchmark is not reproducible from a clean clone. Label it historical/external
+evidence until the retained benchmark artifacts are available.
+
 ## 5. Broader sensor support — P2
 
 Protocol definitions exist for pressure, gas flow, analog and some
@@ -141,6 +145,9 @@ firmware version
 
 This prevents “implemented capability” from being confused with “bench
 validated on this exact hardware.”
+
+The working matrix is now documented at
+[developer/HARDWARE_VALIDATION_MATRIX.md](developer/HARDWARE_VALIDATION_MATRIX.md).
 
 ## 7. DNX64 feature expansion — P2/P3
 
@@ -220,9 +227,9 @@ Future packaging work should cover:
 
 ## 12. Vendor redistribution/legal review — P0 before public binary distribution
 
-The repository currently retains vendor DNX64 runtime files and their original
-license/readme. Before distributing them publicly in a binary/package, verify
-that the signed/vendor SDK agreement permits the intended redistribution.
+The repository does not track the proprietary DNX64 runtime. Before distributing
+an installer/package that supplies vendor DLLs and their original license/readme,
+verify that the signed/vendor SDK agreement permits the intended redistribution.
 
 Do not remove the original vendor notice files.
 
@@ -275,3 +282,7 @@ When implementing roadmap items:
 3. update page docs if UI changed;
 4. add tests;
 5. remove obsolete roadmap text instead of leaving contradictory plans.
+
+Use the audience indexes (`docs/user/INDEX.md` and `docs/developer/INDEX.md`) as
+the stable navigation entry points, and keep evidence labels explicit when a
+feature moves between planned, software-tested and bench-validated status.

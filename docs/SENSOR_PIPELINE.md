@@ -3,10 +3,11 @@
 This document describes the full path from a Multiboard sensor reply to the
 Sensors page, Workspace, CSV and integrated volume.
 
-## 1. Current validated sensor path
+## 1. Current primary sensor path
 
-The primary physical sensor developed and tested with FluidicStudio is the
-Sensirion SLF3S-1300F liquid-flow path through the Multiboard.
+The primary sensor path implemented for FluidicStudio is the Sensirion
+SLF3S-1300F liquid-flow path through the Multiboard. Keep software-tested,
+bench-validated and vendor-described evidence separate.
 
 Other sensor command definitions exist in `backend/protocol.py`, but they should
 not be described as equally validated without hardware evidence.
@@ -171,6 +172,10 @@ and stores:
 
 It subscribes to connection events without consuming the normal event queue.
 
+Disconnect currently removes the subscription but does not fully clear every
+latest/history/availability value. A reconnect must establish a fresh sample
+before a UI treats retained data as current.
+
 ## 11. Chart/display state vs measurement state
 
 UI controls such as:
@@ -216,6 +221,12 @@ Important principles:
 - stopping waits for the worker to finish/flush;
 - filenames live under the application runtime path system.
 
+Current edge cases: headers are assembled from the labels known at logger start,
+so labels discovered later can make the header incomplete; stop waits are not a
+hard guarantee that the worker has exited before the method returns. Add
+regression coverage before treating either behavior as a completed data-integrity
+contract.
+
 Generated logs normally belong under:
 
 ```text
@@ -258,6 +269,9 @@ Same concept with live terminal output and an initial `V` synchronization step.
 These tools are preferred over editing the normal UI when investigating a new
 firmware format.
 
+They are reversible state-changing tools, not passive reads: they send stream and
+calibration commands and should not be run over an active logging workflow.
+
 ## 16. Adding a new sensor
 
 A complete integration should answer all of these:
@@ -275,6 +289,10 @@ A complete integration should answer all of these:
 11. What tests/diagnostic capture prove the behavior?
 
 Do not add a sensor card before these questions are answered.
+
+The generic sensor start/stop path currently does not provide the same explicit
+ACK transaction contract as liquid-flow initialization. New sensor integrations
+must define and test ACK/error behavior rather than assuming a successful write.
 
 ## 17. Relevant files
 

@@ -2,7 +2,7 @@
 
 FluidicStudio is a PyQt6 desktop application for controlling and observing a microfluidic experiment from one interface. It combines Bartels mp-Multiboard2 pump control, live sensor acquisition, generated pump waveforms, Dino-Lite camera capture, offline droplet video Analytics, session persistence, and a synchronized two-panel Workspace.
 
-This release is structured as a **handoff-ready development project**: the important subsystem decisions are documented so a future developer should not need the original development chats or old V-series archives to understand how the application is supposed to behave.
+This release is structured as a **handoff-ready development project**: the important subsystem decisions are documented so a future developer should not need the original development chats or old V-series archives to understand how the application is supposed to behave. The documentation distinguishes current software behavior from bench evidence, vendor-described capability, and planned work.
 
 ## Current feature status
 
@@ -72,7 +72,12 @@ Automatic driver detection is **not** authoritative in this release. See [Future
 
 ## Documentation map
 
-The documentation is deliberately split by responsibility instead of placing everything in two giant files. For a task-oriented map, start with **[Documentation Index](docs/INDEX.md)**.
+The documentation is split by audience without moving the existing canonical
+specialist files, so stable links continue to work:
+
+- **[User documentation](docs/user/INDEX.md)** — setup, safe operation, page guides and troubleshooting.
+- **[Developer documentation](docs/developer/INDEX.md)** — architecture, subsystem contracts, tests, diagnostics and validation.
+- **[Documentation Index](docs/INDEX.md)** — cross-reference and task router.
 
 ### Start here
 
@@ -144,7 +149,7 @@ user_data/
     generated captures, logs, sessions, diagnostics and Analytics files
 
 vendor/dnx64/
-    optional Dino-Lite vendor runtime/notices
+    optional external Dino-Lite runtime/notices; proprietary files are not tracked
 ```
 
 ## Core architecture rules
@@ -205,7 +210,9 @@ Basic video preview uses OpenCV/DirectShow. Dino-Lite-specific controls use DNX6
 
 The product UI exposes brightness, exposure and **LED ON/OFF**. LED intensity/FLC is deliberately not exposed because it was not sufficiently validated on the current setup.
 
-DNX64 is proprietary vendor software. Review the files under `vendor/dnx64/` and redistribution terms before publishing a public binary/package containing those DLLs.
+DNX64 is proprietary vendor software. The runtime is an external installation or
+locally supplied ignored file; it is not bundled in this repository. Review the
+vendor license and installation requirements before publishing a binary/package.
 
 ## Release limitations
 
@@ -216,6 +223,8 @@ Before describing this as a finished general-purpose hardware platform, keep the
 - Analytics currently analyzes recorded video, not single photos;
 - software capability ranges are not automatically equivalent to complete real-hardware validation;
 - lost serial communication can leave physical output state unknown;
+- shutdown and disconnect paths must be treated as failed-safe only after an OFF/POFF acknowledgement;
+- Analytics cancellation, truncated-input and filename-based cache edge cases require conservative interpretation;
 - public packaging/installer and third-party redistribution review remain future work.
 
 ## For the next developer

@@ -7,12 +7,14 @@ from Markdown before opening large PyQt or backend modules.
 ## Recommended onboarding order
 
 1. [README](../README.md) — project status and quick start.
-2. [User Guide](USER_GUIDE.md) — how the application is operated.
-3. [Developer Guide](DEVELOPER_GUIDE.md) — coding rules and sources of truth.
-4. [Software Architecture](SOFTWARE_ARCHITECTURE.md) — how the runtime is assembled.
-5. [Board Communication](BOARD_COMMUNICATION.md) — how commands reach the Multiboard and how replies return.
-6. [Hardware Architecture](HARDWARE_ARCHITECTURE.md) — physical driver/channel topology.
-7. Read the specialist engine/page document for the feature you will change.
+2. [User documentation](user/INDEX.md) — setup, safe operation and page guides.
+3. [Developer documentation](developer/INDEX.md) — coding rules, architecture and validation.
+4. [User Guide](USER_GUIDE.md) — how the application is operated.
+5. [Developer Guide](DEVELOPER_GUIDE.md) — coding rules and sources of truth.
+6. [Software Architecture](SOFTWARE_ARCHITECTURE.md) — how the runtime is assembled.
+7. [Board Communication](BOARD_COMMUNICATION.md) — how commands reach the Multiboard and how replies return.
+8. [Hardware Architecture](HARDWARE_ARCHITECTURE.md) — physical driver/channel topology.
+9. Read the specialist engine/page document for the feature you will change.
 
 ## Architecture and communication
 
@@ -21,7 +23,7 @@ from Markdown before opening large PyQt or backend modules.
 | [Software Architecture](SOFTWARE_ARCHITECTURE.md) | application startup, board registry, shared services, page/Workspace synchronization, threads and state ownership |
 | [Board Communication](BOARD_COMMUNICATION.md) | UART framing, command ACKs, pump transactions, firmware parsing, sensor stream initialization and shutdown |
 | [Hardware Architecture](HARDWARE_ARCHITECTURE.md) | Multiboard driver groups, CH1–CH6 relationships and physical resources |
-| [Hardware Limitations](HARDWARE_LIMITATIONS.md) | validated limits, unverified areas and safety boundaries |
+| [Hardware Limitations](HARDWARE_LIMITATIONS.md) | software limits, bench evidence, unverified areas and safety boundaries |
 | [Pump + Wave Engine](PUMP_WAVE_ENGINE.md) | channel ownership, manual pumps, wave execution, shared frequency/carrier behavior and timing |
 | [Sensor Pipeline](SENSOR_PIPELINE.md) | serial measurement path, units, integration, chart data and CSV logging |
 | [Camera Engine](CAMERA_ENGINE.md) | OpenCV/DirectShow runtime, workers, shared preview and camera controls |
@@ -41,7 +43,9 @@ from Markdown before opening large PyQt or backend modules.
 ## Page documentation
 
 Each page document describes the user-facing behavior, the backend it relies on,
-and the important UX rules that should not be accidentally changed.
+and the important UX rules that should not be accidentally changed. Known
+implementation limitations are called out instead of being hidden behind an
+“implemented” label.
 
 - [Home](pages/HOME.md)
 - [Pumps](pages/PUMPS.md)
@@ -153,9 +157,9 @@ Start at the physical/transport boundary and work upward.
 
 The documentation deliberately distinguishes these statements:
 
-- **Validated** — exercised with the current project hardware or regression tests.
-- **Implemented** — code path exists, but may not have broad hardware validation.
-- **Vendor-described** — present in Dino-Lite/Bartels vendor API/material.
+- **Software-tested** — covered by committed automated tests.
+- **Bench-validated** — exercised on named physical hardware with a retained result.
+- **Vendor-described** — present in Dino-Lite/Bartels vendor API/material, but not necessarily verified here.
 - **Planned** — future work, not current product behavior.
 
 This distinction matters in a laboratory control application. A range shown by a

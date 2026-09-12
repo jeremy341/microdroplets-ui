@@ -19,6 +19,9 @@ Load video
 → export CSV
 ```
 
+Setup is currently drag-oriented: ROI and flow-direction interactions do not
+have a complete keyboard alternative.
+
 ## What the current pipeline can derive
 
 Depending on video quality and calibration, the result model can contain:
@@ -56,6 +59,10 @@ Without calibration:
 - velocity remains pixels/second.
 
 A valid `µm/px` scale converts geometry/velocity into physical units. The calibration belongs to a specific optical setup/resolution; nominal microscope magnification alone is not sufficient.
+
+The current calibration model is principally resolution-based. Do not treat a
+matching width/height as proof that optics, crop, focus and camera identity are
+the same.
 
 ## Processing architecture
 
@@ -103,6 +110,12 @@ user_data/analytics_settings.json
 ```
 
 CSV export is handled by `backend/analytics/csv_export.py`.
+
+Use a unique source filename and inspect cache metadata when results seem stale.
+Current cache paths can collide on filename stem, and partial/cancelled results
+or truncated videos need conservative interpretation rather than being treated
+as complete analyses. Automatic ROI can also change persisted settings without
+fully changing cache identity.
 
 ## Relevant files
 

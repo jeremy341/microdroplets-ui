@@ -8,6 +8,10 @@ The production sources of truth are:
 - `backend/protocol.py` — command builders and reply parser;
 - `backend/serial_manager.py` — transport, ACK handling, state machine and sensor stream.
 
+Evidence note: command syntax and parser behavior are software-tested in the
+repository; physical command behavior remains bench-dependent. See the
+[hardware validation matrix](developer/HARDWARE_VALIDATION_MATRIX.md).
+
 ## 1. Physical transport
 
 Current production configuration:
@@ -135,7 +139,7 @@ The protocol table currently defines:
 
 | Sensor | Start | Stop | Unit in FluidicStudio | Notes |
 | --- | --- | --- | --- | --- |
-| liquid flow | `DFON` | `DFOFF` | µL/min | production/validated path |
+| liquid flow | `DFON` | `DFOFF` | µL/min | software path; liquid-flow bench evidence must be recorded separately |
 | pressure | `DPON` | `DPOFF` | mbar | protocol-defined, hardware validation may be incomplete |
 | gas flow | `DGON` | `DGOFF` | mL/min | protocol-defined |
 | analog 1 | `DA1ON` | `DA1OFF` | raw | protocol-defined |
@@ -171,6 +175,12 @@ write succeeded != hardware action confirmed
 4. returns success only after the ACK is matched.
 
 Only one acknowledged command may be pending at a time.
+
+Current limitation: ACK correlation is based on the command/transaction state,
+not a firmware transaction identifier. A delayed `OK` from a timed-out command
+can satisfy a later retry of the same command. Do not interpret a retry success
+as proof that the most recent physical write was the one acknowledged until this
+is fixed or ruled out by a device-specific protocol guarantee.
 
 ## 6. Atomic command sequences
 
@@ -237,7 +247,10 @@ taking over a channel that might still be physically active.
 OK
 ```
 
-The board may prefix console output with `<<`; normalisation accounts for that.
+The board may prefix console output with `<<`; the intended contract is to
+normalize it before classification. The current implementation does not apply
+that normalization consistently to every error/measurement path, so raw lines
+must remain available when debugging a prefixed response.
 
 ### Error
 
@@ -315,8 +328,11 @@ request V / identify board
 → wait for 2 valid finite measurements
 ```
 
-A sensor is considered available only after real samples arrive. Zero and
-negative readings are valid numeric readings and are not treated as absence.
+A liquid-flow sensor is intended to be considered available only after real
+liquid-flow samples arrive. Zero and negative readings are valid numeric readings
+and are not treated as absence. The current implementation audit found that a
+generic parsed measurement can satisfy this count, so adding another stream
+requires a regression test proving measurement-type filtering.
 
 If no valid samples arrive, the initializer retries instead of freezing Qt.
 
@@ -365,6 +381,11 @@ The connection supports:
 This allows multiple views to observe the same stream without stealing events
 from each other.
 
+The event queue is currently unbounded, and a reader failure can leave the
+connection marked open while command paths remain callable. Consumers must treat
+reader-error/disconnected events as a transport fault and the queue as a
+backpressure risk until those lifecycle contracts are tightened.
+
 ## 13. Connection close behavior
 
 `MultiboardConnection.close()` is intentionally conservative:
@@ -381,6 +402,11 @@ cancel sensor initializer
 
 A serial close is not reported as safe if the board did not confirm global pump
 shutdown.
+
+The application shutdown path currently does not surface every failed `close()`
+result before allowing Qt to terminate. A process exit therefore cannot by
+itself be used as proof that `POFF` was acknowledged; verify the physical setup
+when shutdown is interrupted or unconfirmed.
 
 ## 14. Read-only/diagnostic commands
 

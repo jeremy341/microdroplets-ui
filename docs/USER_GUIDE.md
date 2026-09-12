@@ -1,6 +1,6 @@
 # FluidicStudio User Guide
 
-This guide explains how to install, connect, operate, and safely shut down FluidicStudio. Detailed control descriptions are split into one document per page so this guide stays readable.
+This guide explains how to install, connect, operate, and safely shut down FluidicStudio. Detailed control descriptions are split into one document per page so this guide stays readable. For setup-first navigation, use [user documentation](user/INDEX.md).
 
 ## 1. What FluidicStudio is
 
@@ -34,6 +34,10 @@ For development/testing:
 python -m pip install -r requirements-dev.txt
 pytest -q
 ```
+
+The test suite is environment-sensitive. PyQt, camera, vendor and hardware
+tests may be skipped or require a device; a passing source-only run is not a
+bench validation.
 
 ## 3. Connect the Multiboard
 
@@ -125,6 +129,11 @@ Workspace is not a second control system. Changes are synchronized with the full
 
 Session Management saves/restores application configuration and UI state.
 
+Save and load are intended for an idle application and are blocked while sensor
+logging, camera recording, or pump/Wave outputs are active. A Workspace splitter
+starts around 50/50 and is currently a runtime presentation choice rather than
+a reliable persisted experiment setting.
+
 Loading a session must **not** be interpreted as permission to automatically resume physical outputs. Pumps and waveforms should be explicitly restarted by the operator.
 
 Generated sessions are stored under:
@@ -173,6 +182,10 @@ Ctrl+Shift+Tab  previous page
 
 Workspace is opened through its sidebar button/builder.
 
+Some custom Sensors and Analytics interactions are mouse/drag-oriented and do
+not currently have complete keyboard equivalents. This is a known UI limitation,
+not a reason to infer that the underlying hardware operation is unavailable.
+
 ## 12. Troubleshooting quick reference
 
 ### CH1 and CH2 frequency move together
@@ -195,6 +208,10 @@ The OpenCV video path is working but the DNX64 control path may not be attached 
 
 Verify ROI, flow direction, video quality, and calibration first. Compare multiple recordings before tuning detector parameters.
 
+If a result looks stale or incomplete, use a unique video filename and inspect
+the matching cache. Cancellation and truncated input can leave partial work, and
+cache identity currently relies heavily on the video filename stem.
+
 ### Board connection is lost while a pump may be active
 
 Treat the physical output as **unknown** until verified. A missing acknowledgement does not prove the pump is OFF.
@@ -207,6 +224,8 @@ FluidicStudio is laboratory control software, not a certified safety controller.
 - Never assume a configuration file proves what is physically installed.
 - Stay within the effective ranges appropriate to the real hardware/setup.
 - Treat lost communication conservatively.
+- Treat an unacknowledged OFF/POFF as an unknown physical state.
+- Do not assume the proprietary DNX64 runtime is included with the repository.
 - Keep a safe way to stop/disable the physical experiment.
 
 Read [Hardware Limitations](HARDWARE_LIMITATIONS.md) before unfamiliar hardware work.

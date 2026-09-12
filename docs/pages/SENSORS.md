@@ -45,6 +45,11 @@ After that conversion, the value must remain in µL/min throughout the normal ap
 
 The raw firmware value is retained where useful for raw logging/debugging.
 
+The current audit found two lifecycle limitations to keep in mind: availability
+initialization must be based on the expected liquid-flow measurement type, and
+the shared data hub can retain stale latest/history values across disconnects.
+Verify a fresh sample after reconnect rather than trusting an old visible value.
+
 ## Graph behavior
 
 ### Pause
@@ -72,6 +77,12 @@ Large gaps are treated conservatively instead of assuming flow continued unchang
 The normal CSV is intended for human use. Logging runs independently from the visible chart history.
 
 A raw sidecar (`*_raw.csv`) preserves lower-level sample information for debugging/traceability.
+
+CSV headers are assembled from the sensors known when the logger starts. If a
+sensor label becomes available later, the current logger can produce a header
+that does not describe every later column; use a fresh log after sensor
+discovery when schema fidelity matters. Logger shutdown is asynchronous and
+should be confirmed before treating a file as complete.
 
 Generated sensor logs belong under:
 
@@ -113,6 +124,9 @@ tools/serial_capture.py
 ```
 
 Start at raw serial when values or stream lifecycle are suspicious.
+
+The stream probes are reversible state-changing diagnostics (`DFOFF → L0 →
+DFON`), not passive reads.
 
 ## Relevant tests
 

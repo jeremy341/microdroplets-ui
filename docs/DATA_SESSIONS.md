@@ -21,7 +21,8 @@ once per process; changing it requires an application restart.
 
 ### `waveforms.json`
 
-Stores the saved waveform library used by the Wave/Pumps interfaces.
+Stores the saved waveform library used by the Wave interface. Pumps displays
+driver carrier/signal state; it does not own the saved waveform library.
 
 ## 2. Generated user/runtime data
 
@@ -92,6 +93,9 @@ backend/session_runtime.py
 A session can preserve experiment configuration and board profiles without
 silently reactivating hardware.
 
+Save and load are intended for an idle application. The UI blocks these actions
+while logging, recording, or active pump/Wave outputs are running.
+
 ## 6. Session safety normalization
 
 Runtime pump state is never persisted/restored as physically ON.
@@ -160,8 +164,9 @@ performing a safety-relevant control action.
 ## 11. Analytics cache/results
 
 Analytics stores settings/results under the runtime data paths. The result cache
-key depends on recording + analysis config so stale parameters should not reuse
-a previous analysis.
+includes recording/configuration inputs, but current result paths can still
+collide on filename stem and partial/cancelled results need explicit status
+validation. Do not treat a cache hit as proof of a complete analysis.
 
 Large source videos should normally remain outside source control.
 
@@ -176,6 +181,10 @@ user_data/diagnostics/
 Keep labelled diagnostic captures when they are useful evidence for driver or
 firmware research, but do not commit arbitrary machine-specific logs to the
 release branch.
+
+Some existing tools still write to legacy project-level locations or emit PNGs
+as part of a smoke test. Record the actual path in a diagnostic result and move
+new output under `user_data/diagnostics/`.
 
 ## 13. Environment variables
 

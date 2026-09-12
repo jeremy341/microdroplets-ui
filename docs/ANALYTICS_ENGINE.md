@@ -83,6 +83,10 @@ It provides:
 A bad/unopenable file raises `VideoOpenError` rather than letting downstream
 code operate on empty frames.
 
+Frame-count metadata is not a complete integrity check. A truncated recording
+can end before the advertised frame count and still reach the normal result path;
+callers must distinguish complete input from a partial read.
+
 ## 5. Analysis configuration
 
 `AnalysisConfig` contains the parameters needed to reproduce an analysis,
@@ -113,6 +117,11 @@ the final unique droplet count across the recording.
 
 `DropletAnalyzer` can estimate flow direction and choose/adjust an analysis ROI.
 The analysis is therefore not merely a fixed global contour threshold.
+
+Automatic ROI currently has a persistence/cache coupling: it can update saved
+settings while the effective analysis identity does not change in the same way.
+Keep runtime-derived ROI separate from user-authored configuration when fixing
+this boundary.
 
 When modifying ROI logic, verify both:
 
@@ -206,6 +215,17 @@ analysis configuration.
 
 Runtime paths are documented in [Data and Sessions](DATA_SESSIONS.md).
 
+Current cache limitations:
+
+- cache directories are vulnerable to collisions between videos sharing a stem;
+- partial/cancelled results can be loaded like ordinary cache hits;
+- the optional expected cache key makes stale-hit handling dependent on callers;
+- cancellation can leave a worker/result race that updates the UI after a newer
+  analysis has started.
+
+Treat a cache hit as usable only after checking source identity, configuration,
+completion status and cancellation state.
+
 ## 16. CSV export
 
 `export_result_csv()` creates human-readable Analytics CSV output with stable
@@ -216,8 +236,9 @@ object dumps.
 
 ## 17. Current benchmark history and next detector work
 
-The current detector line was benchmarked around the V65/V66 development phase.
-Three real recordings were selected as an initial validation set:
+The current detector line was historically benchmarked around the V65/V66
+development phase. Three real recordings were selected as an initial benchmark
+set:
 
 ```text
 recording_20260820_164623(1).mp4
@@ -237,8 +258,9 @@ The intended baseline metrics include:
 The future V66-style work should be driven by measured error classes rather than
 blind OpenCV parameter tuning. See [Future Roadmap](FUTURE_ROADMAP.md).
 
-The recordings themselves are not part of the release repository and should not
-be committed unless licensing/privacy/storage policy explicitly permits it.
+The recordings and result manifests are not part of the release repository, so
+the historical benchmark is not reproducible from a clean clone and must not be
+described as current bench validation without external retained artifacts.
 
 ## 18. Planned still-image Analytics
 
@@ -272,3 +294,6 @@ test_analytics_event_geometry.py
 ```
 
 These tests are necessary but do not replace a real-video benchmark.
+
+The UI also needs an empty-result guard: graph metadata such as label/unit must
+not be assumed to exist when an analysis returns no plottable series.

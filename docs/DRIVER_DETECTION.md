@@ -16,7 +16,8 @@ Automatic detection must not silently replace this file until the firmware finge
 
 ## 2. Existing reconnaissance tools
 
-The release includes read-oriented tools:
+The release includes read-oriented reconnaissance tools (still verify the exact
+command options before using them on a live board):
 
 ```powershell
 python tools/driver_detection_probe.py COM3 --label highdriver4_only
@@ -35,6 +36,10 @@ P1V? ... P6V?   optional
 ```
 
 Diagnostic output belongs in `user_data/diagnostics/` and should not be committed as normal source data.
+
+These captures are software/bench evidence only when they include the physical
+board, firmware and driver arrangement labels. A fingerprint without that
+context is not a detection result.
 
 ## 3. Bench observations so far
 
@@ -90,6 +95,9 @@ UI warning / confirmation
 ```
 
 `backend/driver_capabilities.py` should still define what a known driver type is allowed to do. Detection should identify hardware, not redefine ranges.
+
+Keep the final result aligned with the [hardware validation matrix](developer/HARDWARE_VALIDATION_MATRIX.md)
+and the evidence labels used throughout the documentation.
 
 ## 6. User-facing behavior when detection is added
 

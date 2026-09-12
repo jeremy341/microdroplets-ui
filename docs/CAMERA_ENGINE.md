@@ -52,8 +52,8 @@ DNX64 is optional for basic frame preview. Therefore “preview works, exposure 
 | File | Role |
 | --- | --- |
 | `backend/camera_service.py` | primary camera abstraction, OpenCV + DNX64 coordination |
-| `backend/dnx64_api.py` | small ctypes wrapper around the required DNX64 API |
-| `backend/dnx64_vendor.py` | vendor-derived low-level wrapper/reference methods |
+| `backend/dnx64_api.py` | small ctypes wrapper around the required DNX64 API; keep its relationship to production explicit |
+| `backend/dnx64_vendor.py` | current vendor-derived low-level wrapper used by the camera service |
 | `backend/camera_profiles.py` | persistent/per-device camera profile support |
 | `backend/fps_profiles.py` | FPS profile helpers |
 | `ui/pages/Camera.py` | full camera UI, workers and UI-side orchestration |
@@ -89,7 +89,8 @@ Controls should not repeatedly initialize DNX64 on every slider event.
 
 ## 6. Supported UI video presets
 
-For the validated AM4113T(R9) profile:
+For the documented AM4113T(R9) profile (the profile is not a substitute for a
+current bench result):
 
 ```text
 1280×1024 → 10, 20 FPS
@@ -132,9 +133,19 @@ Manual exposure is enabled only when Auto is off. Mode changes are applied befor
 
 The slider uses throttled live writes and a final readback/commit when interaction finishes.
 
+The current implementation audit found that auto-exposure enable can report
+success without a reliable readback, and the production exposure mapping is
+quadratic while some diagnostic tools use a linear mapping. Keep those paths
+separate in tests and do not infer camera calibration from the UI percentage.
+
 ## 10. Brightness
 
 Brightness handling remembers the discovered representation/scale. A readback of zero is ambiguous because zero is valid in multiple driver scales; the backend therefore does not repeatedly reinterpret the scale after it has been learned.
+
+The DNX64 brightness binding also needs exact-device verification: the current
+ctypes call path can pass the first range value with the wrong pointer/value
+shape, causing fallback ranges or failed writes on real hardware even when fake
+tests pass.
 
 ## 11. LED
 
@@ -160,18 +171,26 @@ Recording uses a separate recorder worker. If frame production outruns writing, 
 
 Changing resolution/FPS while recording stops the recording before applying the new mode.
 
+Known lifecycle limitations include startup/stop races, worker reads after a
+camera close or replacement, swallowed read exceptions, and a recorder object
+that may remain attached after a writer failure. A stop request that times out
+must not be treated as proof that the worker has exited.
+
 ## 13. DNX64 runtime resolution
 
 DNX64 contains substantially more vendor functionality than the current Camera UI exposes. Do not infer UI support from the existence of a vendor wrapper method; consult [DNX64 API Reference](DNX64_REFERENCE.md) first.
 
 
-The backend can resolve DNX64 from:
+The backend can resolve an externally installed/locally supplied DNX64 runtime
+from:
 
 1. the `DNX64_DLL` environment variable;
-2. the project-local `vendor/dnx64/DNX64.dll`;
+2. the project-local ignored `vendor/dnx64/DNX64.dll` when supplied by the user;
 3. an installed DNX64 location.
 
-Keep the vendor notices/license with the runtime. Verify redistribution terms before a public installer/repository distribution.
+Keep the vendor notices/license with the runtime. Verify redistribution terms
+before a public installer/repository distribution. The repository does not
+contain the proprietary DLL.
 
 ## 14. Debugging order
 
@@ -199,6 +218,10 @@ tools/exposure_resolution_diagnostic.py
 ```
 
 Do not widen UI ranges merely because a raw driver reports a larger ceiling.
+
+The diagnostic defaults also need care: a 1280×1024 smoke configuration using
+30 FPS is outside the documented production preset, so diagnostic success/failure
+must not be interpreted as a product-mode result.
 
 ## 15. Tests to keep green
 

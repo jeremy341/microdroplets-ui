@@ -121,6 +121,11 @@ Ownership is **per channel**, not per driver.
 4. rolls back with only that channel's OFF if startup fails;
 5. updates last acknowledged driver frequency on success.
 
+Audit note: the current implementation claims ownership before every command
+sequence input has been validated. An invalid manual-start request can therefore
+leak a claim even though no output was started. Treat validation-before-claim as
+a required invariant for future fixes.
+
 Typical Highdriver4 sequence:
 
 ```text
@@ -302,6 +307,11 @@ If OFF is not confirmed:
 `stop_all()` is used during board/application shutdown and performs a final
 per-channel OFF retry before higher-level shutdown can fall back to global
 `POFF`.
+
+Known lifecycle exception: `stop_wave()` can release ownership when the transport
+is already closed, even though OFF was not confirmed. This contradicts the
+normal unknown-state rule above and is a high-priority regression target. Do not
+document or implement transport closure as proof of OFF.
 
 ## 16. Workspace parity
 

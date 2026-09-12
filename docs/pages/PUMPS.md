@@ -51,12 +51,19 @@ Each channel provides:
 
 - amplitude slider;
 - numeric Vpp input;
-- saved-wave selector where applicable;
+- carrier/signal context when supported by the driver;
 - ON/OFF switch.
+
+The saved waveform library belongs to the Wave page. Pumps exposes the current
+driver carrier/signal setting, not a saved Wave-program selector.
 
 When a channel is OFF, amplitude controls look muted but remain editable. This is intentional: the user can stage the next amplitude without activating the pump.
 
 When ON, amplitude changes are sent through the manual pump backend.
+
+If the channel is currently Wave-owned, manual edits can be rejected by the
+backend while the control is still rendered. Read the ownership/status message;
+do not treat an unchanged control as proof that a command was accepted.
 
 ## Ownership/interlocks
 

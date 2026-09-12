@@ -1,6 +1,6 @@
 # FluidicStudio Developer Guide
 
-This is the handoff document for developers continuing FluidicStudio. Detailed subsystem behavior is intentionally split into specialist documents and per-page guides instead of being repeated here.
+This is the handoff document for developers continuing FluidicStudio. Detailed subsystem behavior is intentionally split into specialist documents and per-page guides instead of being repeated here. Read [developer documentation](developer/INDEX.md) for the audience-specific route and [hardware validation matrix](developer/HARDWARE_VALIDATION_MATRIX.md) before calling a capability validated.
 
 ## 1. First principle: one backend state, multiple views
 
@@ -52,7 +52,7 @@ user_data/
     generated runtime data; ignored by Git
 
 vendor/dnx64/
-    optional vendor runtime/notices for Dino-Lite controls
+    optional external vendor runtime/notices; proprietary DLLs are ignored/not tracked
 ```
 
 ## 3. Specialist documentation
@@ -114,6 +114,19 @@ Read the page document before significantly changing that page.
 
 Keep rules at the correct boundary instead of duplicating them in button callbacks.
 
+### Composition and ownership caveats
+
+The current implementation is a working modular monolith, not a cleanly
+isolated service graph. `app.py` is still the composition root and contains
+application-wide registries, page coordination, session orchestration and
+shutdown logic. It also performs import-time path/configuration setup. Treat
+those globals and side effects as migration constraints when refactoring.
+
+`Workspace.py` imports concrete full-page widgets, and sensor state currently
+exists in more than one layer (serial events, `SensorDataHub`, and page state).
+The intended rule remains one physical runtime and one backend source of truth,
+but these seams need explicit regression tests before being extracted.
+
 ## 5. Pump architecture rules that must not regress
 
 The physical driver groups are:
@@ -165,6 +178,11 @@ Logging and visible graph history are independent. Pausing a chart is a view ope
 
 `SensorDataHub` allows multiple views to observe data without competing to consume serial events.
 
+Known audit limitation: disconnect currently unsubscribes the hub but does not
+fully clear every latest/history/availability value. A reconnect must therefore
+be tested for stale data before this is treated as a complete lifecycle
+contract.
+
 ## 8. Camera architecture
 
 The full Camera page and Camera Workspace must share one runtime/video handle. OpenCV/DirectShow owns frames; DNX64 adds Dino-Lite controls where available.
@@ -172,6 +190,11 @@ The full Camera page and Camera Workspace must share one runtime/video handle. O
 Do not reintroduce LED intensity simply because low-level FLC methods exist. The product UI intentionally exposes LED ON/OFF only.
 
 Read [Camera Engine](CAMERA_ENGINE.md) before changing workers, startup, exposure, modes, or Workspace preview.
+
+Known audit limitations include startup/stop races, worker reads after a close or
+replacement, swallowed camera read exceptions, and incomplete recording cleanup
+after a writer failure. These are backend lifecycle issues, not reasons to open a
+second camera handle in Workspace.
 
 ## 9. Analytics architecture
 
@@ -190,6 +213,12 @@ VideoSource
 A counted event and valid geometry are intentionally distinct.
 
 Continue detector work through benchmarks on multiple real recordings and error classification, not blind threshold tuning on one video.
+
+Current cache behavior needs conservative handling: result paths are vulnerable
+to filename-stem collisions, partial/cancelled results can be mistaken for
+normal cache hits, and automatic ROI can mutate persistent settings without
+matching the cache identity. Empty-result rendering and truncated-video
+semantics also need regression coverage.
 
 A future still-image path should be geometry-only unless an external time reference exists.
 
@@ -236,6 +265,9 @@ user_data/workspace_settings.json
 `backend/application_paths.py` is responsible for runtime paths/migration.
 
 Session restore must remain conservative: restore configuration/UI state without silently restarting old physical pump/wave outputs.
+
+Both save and load are intended for an idle application. The current UI blocks
+session operations while logging, recording, or active outputs are running.
 
 ## 12. Diagnostics strategy
 
@@ -285,6 +317,14 @@ test_driver*.py
 Prefer behavioral tests. Avoid freezing arbitrary QSS/source strings unless the architecture itself cannot be tested more directly.
 
 A bug that can silently change physical state, units, ownership, or recorded experiment data deserves a regression test.
+
+The current repository contains approximately 43 tracked test modules and 247
+test functions/methods, but has no committed CI workflow, coverage threshold,
+`pyproject.toml`/tox/nox configuration, or packaging metadata. PyQt and vendor
+tests can be skipped when dependencies are absent, so record the environment
+and skipped tests with every validation result. `tests/test_application_paths.py`
+still assumes a local vendor DNX64 DLL even though the proprietary runtime is
+not tracked; keep source-only and vendor/hardware test lanes separate.
 
 ## 14. Comments and code style
 
