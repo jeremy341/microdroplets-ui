@@ -1,7 +1,9 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
 .venv/
+.idea/
 
 # Proprietary Dino-Lite runtime; code integrations may be committed, vendor binaries may not.
 vendor/dnx64/
@@ -20,3 +22,9 @@ user_data/exports/*
 !user_data/exports/.gitkeep
 user_data/analytics/*
 !user_data/analytics/.gitkeep
+user_data/iris_step_test/*
+user_data/iris_full_range_test/*
+
+# Experiment artifacts that historically landed in the repo root; keep them out.
+captures/
+diagnostics/
