@@ -42,6 +42,22 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(parse_reply("temperature 23.1", "liquid_flow").kind, "unknown")
         self.assertEqual(parse_reply("V=NaN", "liquid_flow").kind, "unknown")
         self.assertEqual(parse_reply("V=1.2 extra", "liquid_flow").kind, "unknown")
+        # A trailing second number is never treated as a unit.
+        self.assertEqual(parse_reply("V=1.25 2.5", "liquid_flow").kind, "unknown")
+
+    def test_measurement_lines_parse_with_console_prefix_or_unit_suffix(self) -> None:
+        for line in ("<<V=1.25", "V=1.25 mL/min", "V=1.25 uL/min", "V=1.25"):
+            with self.subTest(line=line):
+                reply = parse_reply(line, "liquid_flow")
+                self.assertEqual(reply.kind, "measurement")
+                self.assertEqual(reply.measurement.value, 1250.0)
+                self.assertEqual(reply.measurement.raw_value_ml_min, 1.25)
+        marked = parse_reply("<<RSLF=0.5 uL/min")
+        self.assertEqual(marked.kind, "measurement")
+        self.assertEqual(marked.measurement.sensor_id, "liquid_flow")
+        self.assertEqual(marked.measurement.value, 500.0)
+        pressure = parse_reply("RSDPC: 101.2 mbar")
+        self.assertEqual(pressure.measurement.sensor_id, "pressure")
 
     def test_board_rejections_are_reported_as_errors(self) -> None:
         self.assertEqual(parse_reply("FAIL", "liquid_flow").kind, "error")

@@ -12,7 +12,6 @@ ownership, fixed AM4113T(R9) modes, recording timing, and DNX64 fallback.
 
 from __future__ import annotations
 
-import ctypes
 import math
 import os
 import platform
@@ -239,11 +238,10 @@ class _Dnx64Controller:
         """Attach DNX64 to the selected Dino-Lite device.
 
         The official Python example sets the device index and then queries
-        ``GetVideoDeviceCount``.  The vendor wrapper performs its own ``Init``
-        inside that call.  Some SDK/runtime combinations return a false value
-        from the explicit ``Init`` call even though the device is immediately
-        visible afterwards, so device enumeration is the authoritative
-        readiness check instead of the boolean alone.
+        ``GetVideoDeviceCount``.  Some SDK/runtime combinations return a false
+        value from the explicit ``Init`` call even though the device is
+        immediately visible afterwards, so device enumeration is the
+        authoritative readiness check instead of the boolean alone.
         """
 
         self.last_error = None
@@ -269,11 +267,6 @@ class _Dnx64Controller:
 
                 sdk = DNX64(str(candidate))
 
-                # DNX64.h declares SetVideoProcAmp(int, long). The vendor
-                # wrapper shipped with the SDK declares only one argument.
-                sdk.dnx64.SetVideoProcAmp.argtypes = [ctypes.c_long, ctypes.c_long]
-                sdk.dnx64.SetVideoProcAmp.restype = None
-
                 sdk.SetVideoDeviceIndex(self.sdk_index)
 
                 # Keep the explicit Init call, but do not make its boolean the only
@@ -287,8 +280,9 @@ class _Dnx64Controller:
                 time.sleep(0.05)
 
                 # Follow Dino-Lite's public Python usage: after selecting the
-                # device index, enumerate devices.  The vendor wrapper invokes
-                # Init internally before returning the count.
+                # device index, enumerate devices. The wrapper no longer
+                # performs an implicit Init inside GetVideoDeviceCount; the
+                # explicit Init above owns SDK initialization.
                 count = int(sdk.GetVideoDeviceCount())
                 if count <= self.sdk_index:
                     raise RuntimeError(
@@ -469,6 +463,10 @@ class OpenCVCamera:
     def __init__(self) -> None:
         self._capture = None
         self._lock = threading.RLock()
+        # Serializes property verifications (which intentionally run their
+        # async-apply retry outside ``_lock``) so two overlapping writes to
+        # the same property cannot cross-contaminate each other's readbacks.
+        self._property_verify_lock = threading.Lock()
         # The newest decoded frame belongs to the shared camera runtime rather
         # than to whichever Qt page happened to render it last. Workspace and
         # the full Camera page can therefore observe the same live frame without
@@ -511,61 +509,65 @@ class OpenCVCamera:
     ) -> None:
         if cv2 is None:
             raise RuntimeError("OpenCV is not installed. Run: python -m pip install opencv-python")
-        self.close()
-        capture = cv2.VideoCapture(index, _backend())
-        if not capture.isOpened():
-            capture.release()
-            raise RuntimeError(f"Could not open camera index {index}.")
-        self._capture = capture
-        self.device_index = index
-        self.sdk_index = index if sdk_index is None else sdk_index
+        # The whole open sequence mutates ``_capture``/``_dnx64``/mode state;
+        # hold the same lock that read()/close() use so a concurrent read
+        # cannot observe the closed-and-not-yet-reopened intermediate state.
+        with self._lock:
+            self.close()
+            capture = cv2.VideoCapture(index, _backend())
+            if not capture.isOpened():
+                capture.release()
+                raise RuntimeError(f"Could not open camera index {index}.")
+            self._capture = capture
+            self.device_index = index
+            self.sdk_index = index if sdk_index is None else sdk_index
 
-        # Attach DNX64 immediately after opening
-        # the DirectShow device. If that fails on a driver that needs an active
-        # stream, read one frame and retry once. Controls themselves never
-        # reinitialize the SDK.
-        controller = _Dnx64Controller(self.sdk_index)
-        if controller.initialize():
-            self._dnx64 = controller
-        else:
-            first_error = controller.last_error
-            try:
-                capture.read()
-            except (AttributeError, OSError, TypeError, ValueError):
-                pass
-            time.sleep(0.12)
-            retry = _Dnx64Controller(self.sdk_index)
-            if retry.initialize():
-                self._dnx64 = retry
+            # Attach DNX64 immediately after opening
+            # the DirectShow device. If that fails on a driver that needs an active
+            # stream, read one frame and retry once. Controls themselves never
+            # reinitialize the SDK.
+            controller = _Dnx64Controller(self.sdk_index)
+            if controller.initialize():
+                self._dnx64 = controller
             else:
-                self._dnx64 = None
-                self.dnx64_status = retry.last_error or first_error or "DNX64 unavailable"
+                first_error = controller.last_error
+                try:
+                    capture.read()
+                except (AttributeError, OSError, TypeError, ValueError):
+                    pass
+                time.sleep(0.12)
+                retry = _Dnx64Controller(self.sdk_index)
+                if retry.initialize():
+                    self._dnx64 = retry
+                else:
+                    self._dnx64 = None
+                    self.dnx64_status = retry.last_error or first_error or "DNX64 unavailable"
 
-        if self._dnx64 is not None:
-            self.dnx64_status = "connected"
-            self.dnx64_dll_path = str(self._dnx64.dll_path)
-            try:
-                sdk_name, sdk_device_id, detected_config = self._dnx64.device_info(
-                    int(self.sdk_index)
-                )
-                if not device_name or device_name.startswith("Camera "):
-                    device_name = sdk_name
-                if not device_id:
-                    device_id = sdk_device_id
-                if sdk_config is None:
-                    sdk_config = detected_config
-            except (OSError, AttributeError, TypeError, ValueError):
-                pass
-        else:
-            self.dnx64_dll_path = None
+            if self._dnx64 is not None:
+                self.dnx64_status = "connected"
+                self.dnx64_dll_path = str(self._dnx64.dll_path)
+                try:
+                    sdk_name, sdk_device_id, detected_config = self._dnx64.device_info(
+                        int(self.sdk_index)
+                    )
+                    if not device_name or device_name.startswith("Camera "):
+                        device_name = sdk_name
+                    if not device_id:
+                        device_id = sdk_device_id
+                    if sdk_config is None:
+                        sdk_config = detected_config
+                except (OSError, AttributeError, TypeError, ValueError):
+                    pass
+            else:
+                self.dnx64_dll_path = None
 
-        self._brightness_scale = None
-        self._manual_exposure = None
-        self.set_video_mode(width, height, fps)
-        self.capabilities = self._build_capabilities(
-            device_name or f"Camera {index}", device_id, sdk_config
-        )
-        self._cache_initial_controls()
+            self._brightness_scale = None
+            self._manual_exposure = None
+            self.set_video_mode(width, height, fps)
+            self.capabilities = self._build_capabilities(
+                device_name or f"Camera {index}", device_id, sdk_config
+            )
+            self._cache_initial_controls()
 
     def _build_capabilities(
         self, device_name: str, device_id: Optional[str], sdk_config: Optional[int]
@@ -726,57 +728,83 @@ class OpenCVCamera:
     def set_property_verified(
         self, prop: int, value: float, *, tolerance: float = 1e-3
     ) -> CameraPropertyResult:
-        """Write a UVC property and verify what the driver actually applied."""
+        """Write a UVC property and verify what the driver actually applied.
 
+        The initial write and first readback happen under the service lock.
+        The asynchronous-apply retry loop runs outside the lock (bounded to a
+        single ``get`` per hold) so a slow DirectShow property application
+        cannot block ``close()``/``stop_camera()`` for the whole retry window.
+        """
+
+        # Overlapping verifications (e.g. rapid slider changes) must not
+        # cross-contaminate readbacks; serialize them without holding the
+        # service lock for the retry window.
+        with self._property_verify_lock:
+            return self._set_property_verified_locked(prop, value, tolerance=tolerance)
+
+    def _set_property_verified_locked(
+        self, prop: int, value: float, *, tolerance: float
+    ) -> CameraPropertyResult:
         with self._lock:
             if not self.is_open:
                 return CameraPropertyResult(False, value, None, "camera is not open")
+            capture = self._capture
             try:
-                before = float(self._capture.get(prop))
-                accepted = bool(self._capture.set(prop, value))
-                applied = float(self._capture.get(prop))
-                # DirectShow/UVC drivers can apply a control asynchronously.
-                # A single immediate readback may therefore still contain the
-                # previous value. Retry briefly in the worker thread instead
-                # of declaring a valid slider write failed.
-                if accepted and math.isfinite(applied):
-                    # DirectShow can apply exposure-mode changes after the
-                    # capture graph has processed another frame.  30 ms was
-                    # too short on the AM4113T and caused the following
-                    # exposure write to be sent while auto exposure was still
-                    # active.
-                    for _ in range(12):
-                        if abs(applied - value) <= tolerance:
-                            break
-                        time.sleep(0.015)
-                        applied = float(self._capture.get(prop))
+                before = float(capture.get(prop))
+                accepted = bool(capture.set(prop, value))
+                applied = float(capture.get(prop))
             except (AttributeError, OSError, TypeError, ValueError):
                 return CameraPropertyResult(False, value, None, "driver rejected the property")
-            if not math.isfinite(applied) or applied < -1e8:
+        # DirectShow/UVC drivers can apply a control asynchronously. A single
+        # immediate readback may therefore still contain the previous value.
+        # Retry briefly in the worker thread instead of declaring a valid
+        # slider write failed.
+        if accepted and math.isfinite(applied):
+            # DirectShow can apply exposure-mode changes after the
+            # capture graph has processed another frame.  30 ms was
+            # too short on the AM4113T and caused the following
+            # exposure write to be sent while auto exposure was still
+            # active.
+            for _ in range(12):
+                if abs(applied - value) <= tolerance:
+                    break
+                time.sleep(0.015)
+                with self._lock:
+                    if self._capture is not capture:
+                        # The camera was closed/reopened during verification;
+                        # do not read from the released capture object.
+                        return CameraPropertyResult(
+                            False, value, None, "camera closed during verification"
+                        )
+                    try:
+                        applied = float(capture.get(prop))
+                    except (AttributeError, OSError, TypeError, ValueError):
+                        return CameraPropertyResult(False, value, None, "driver rejected the property")
+        if not math.isfinite(applied) or applied < -1e8:
+            return CameraPropertyResult(
+                False, value, None, "property is not exposed by this camera"
+            )
+        if not accepted:
+            return CameraPropertyResult(False, value, applied, "driver rejected the property")
+        if (
+            math.isfinite(before)
+            and abs(value - before) > tolerance
+            and abs(applied - before) <= tolerance
+        ):
+            if accepted:
+                # The capture backend accepted the write, but its
+                # readback is still one update behind. Treat this as a
+                # pending asynchronous application rather than rejecting
+                # the user's slider change.
                 return CameraPropertyResult(
-                    False, value, None, "property is not exposed by this camera"
+                    True, value, applied, "accepted; readback pending"
                 )
-            if not accepted:
-                return CameraPropertyResult(False, value, applied, "driver rejected the property")
-            if (
-                math.isfinite(before)
-                and abs(value - before) > tolerance
-                and abs(applied - before) <= tolerance
-            ):
-                if accepted:
-                    # The capture backend accepted the write, but its
-                    # readback is still one update behind. Treat this as a
-                    # pending asynchronous application rather than rejecting
-                    # the user's slider change.
-                    return CameraPropertyResult(
-                        True, value, applied, "accepted; readback pending"
-                    )
-                return CameraPropertyResult(
-                    False, value, applied, "driver ignored the requested value"
-                )
-            # UVC drivers may quantize or clamp values. That is supported; a
-            # sentinel readback such as -1 means the property is unavailable.
-            return CameraPropertyResult(True, value, applied, "applied")
+            return CameraPropertyResult(
+                False, value, applied, "driver ignored the requested value"
+            )
+        # UVC drivers may quantize or clamp values. That is supported; a
+        # sentinel readback such as -1 means the property is unavailable.
+        return CameraPropertyResult(True, value, applied, "applied")
 
     def set_auto_exposure(self, enabled: bool) -> CameraPropertyResult:
         """Switch the UVC exposure mode and wait for the driver to settle.

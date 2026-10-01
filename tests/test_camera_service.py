@@ -1,3 +1,4 @@
+import time
 import unittest
 
 import backend.camera_service as camera_service
@@ -261,3 +262,111 @@ class CameraServiceTests(unittest.TestCase):
         automatic = camera.set_auto_exposure(True)
         self.assertTrue(automatic.supported)
         self.assertEqual(automatic.applied, 0.75)
+
+
+class SlowStaleCapture(FakeCapture):
+    """Model a driver whose readbacks lag, forcing the verification retry."""
+
+    def __init__(self):
+        super().__init__()
+        self.get_delay_s = 0.0
+        self.values[CAP_PROP_BRIGHTNESS] = 1.0
+
+    def set(self, prop, value):
+        # The driver accepts the write but its readback never reflects it,
+        # so verification retries for the full window.
+        return True
+
+    def get(self, prop):
+        if self.get_delay_s:
+            time.sleep(self.get_delay_s)
+        return 1.0
+
+
+class CameraServiceLockTests(unittest.TestCase):
+    def test_property_verification_does_not_hold_the_lock_while_retrying(self):
+        import threading
+        import time as time_module
+
+        camera = OpenCVCamera()
+        capture = SlowStaleCapture()
+        capture.get_delay_s = 0.04
+        camera._capture = capture
+
+        done = threading.Event()
+        thread = threading.Thread(
+            target=lambda: (camera.set_property_verified(CAP_PROP_BRIGHTNESS, 0.42), done.set()),
+            daemon=True,
+        )
+        thread.start()
+        try:
+            if not done.wait(0.08):
+                started = time_module.monotonic()
+                camera.close()
+                elapsed = time_module.monotonic() - started
+                # The retry loop runs outside the service lock, so close()
+                # must not wait for the whole verification window.
+                self.assertLess(elapsed, 1.0)
+                self.assertFalse(done.is_set())
+            else:
+                self.fail("verification finished before close() could interleave")
+        finally:
+            done.wait(2.0)
+            thread.join(2.0)
+
+
+class CameraProfileQuarantineTests(unittest.TestCase):
+    def test_corrupt_profile_json_is_quarantined_not_silently_reset(self):
+        import tempfile
+        from pathlib import Path
+
+        from backend.camera_profiles import CameraProfileStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "camera_profiles.json"
+            path.write_text("{corrupted", encoding="utf-8")
+            store = CameraProfileStore(path)
+            store.ensure_device("dev-1", "Dino-Lite")
+            corrupt_copy = path.with_suffix(".json.corrupt")
+            self.assertTrue(corrupt_copy.exists())
+            self.assertEqual(corrupt_copy.read_text(encoding="utf-8"), "{corrupted")
+            # The fresh store is usable and persisted afterwards.
+            self.assertTrue(path.is_file())
+
+    def test_wrong_shape_profile_json_is_quarantined(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from backend.camera_profiles import CameraProfileStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "camera_profiles.json"
+            path.write_text(json.dumps(["not", "a", "mapping"]), encoding="utf-8")
+            store = CameraProfileStore(path)
+            store.ensure_device("dev-1", "Dino-Lite")
+            self.assertTrue(path.with_suffix(".json.corrupt").exists())
+
+
+class Dnx64VendorContractTests(unittest.TestCase):
+    def test_set_video_proc_amp_signature_matches_dnx64_header(self):
+        import ctypes
+
+        from backend.dnx64_vendor import METHOD_SIGNATURES
+
+        self.assertEqual(
+            METHOD_SIGNATURES["SetVideoProcAmp"],
+            ([ctypes.c_int, ctypes.c_long], None),
+        )
+
+    def test_get_video_device_count_does_not_reinitialize_the_sdk(self):
+        import unittest.mock
+
+        import backend.dnx64_vendor as vendor
+
+        fake = unittest.mock.MagicMock()
+        fake.GetVideoDeviceCount.return_value = 2
+        with unittest.mock.patch.object(vendor.ctypes, "CDLL", return_value=fake):
+            dnx = vendor.DNX64("fake.dll")
+            self.assertEqual(dnx.GetVideoDeviceCount(), 2)
+        self.assertEqual(fake.Init.call_count, 0)

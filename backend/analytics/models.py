@@ -225,6 +225,7 @@ class AnalysisResult:
     overlays: dict[int, list[OverlayDetection]] = field(default_factory=dict)
     complete: bool = True
     processed_frames: int = 0
+    skipped_frames: int = 0
     analyzer_version: str = ANALYZER_VERSION
     cache_key: str = ""
 
@@ -245,6 +246,7 @@ class AnalysisResult:
             },
             "complete": self.complete,
             "processed_frames": self.processed_frames,
+            "skipped_frames": self.skipped_frames,
             "analyzer_version": self.analyzer_version,
             "cache_key": self.cache_key,
         }
@@ -267,6 +269,7 @@ class AnalysisResult:
             },
             complete=bool(data.get("complete", True)),
             processed_frames=int(data.get("processed_frames", 0)),
+            skipped_frames=int(data.get("skipped_frames", 0)),
             analyzer_version=str(data.get("analyzer_version", ANALYZER_VERSION)),
             cache_key=str(data.get("cache_key", "")),
         )

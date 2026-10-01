@@ -42,7 +42,7 @@ METHOD_SIGNATURES: dict = {
     "SetLensFinePos": ([ctypes.c_int, ctypes.c_long], None),
     "SetLensPos": ([ctypes.c_int, ctypes.c_long], None),
     "SetVideoDeviceIndex": ([ctypes.c_int], None),
-    "SetVideoProcAmp": ([ctypes.c_long], None),
+    "SetVideoProcAmp": ([ctypes.c_int, ctypes.c_long], None),
     "SetEventCallback": ([ctypes.CFUNCTYPE(None)], None),
   }
 
@@ -237,7 +237,9 @@ class DNX64:
         Returns:
             int: Number of video devices.
         """
-        self.dnx64.Init()
+        # No implicit Init() here: the caller owns SDK initialization. An
+        # implicit Init inside a getter re-initialized the SDK stack on every
+        # enumeration and was a likely cause of flaky attach behavior.
         return self.dnx64.GetVideoDeviceCount()
     
     def GetVideoDeviceIndex(self) -> int:

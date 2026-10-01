@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
@@ -84,15 +85,34 @@ class DropletAnalyzer:
         config = self._config_for_video(source)
         # Cache identity follows the user's requested configuration.  Auto mode
         # may derive a narrower effective ROI below, but the same source + user
-        # settings must still resolve to the same cached analysis.
+        # settings must still resolve to the same cached analysis. The user's
+        # config itself is never mutated: the auto-detected ROI is an outcome
+        # of one run, not a setting the user asked for.
         cache_config = AnalysisConfig.from_dict(config.to_dict())
+        self._skipped_frames = 0
+        source.open()
+        try:
+            return self._analyze_with_source(source, config, cache_config, progress_callback, preview_callback, cancel_check)
+        finally:
+            source.release()
+
+    def _analyze_with_source(
+        self,
+        source: VideoSource,
+        config: AnalysisConfig,
+        cache_config: AnalysisConfig,
+        progress_callback: ProgressCallback | None,
+        preview_callback: PreviewCallback | None,
+        cancel_check: CancelCheck | None,
+    ) -> AnalysisResult:
         detector = DropletDetector.from_video(source, config)
         flow = _unit(config.flow_direction or self._estimate_flow_direction(source, detector))
 
         auto_roi = self._auto_channel_roi(source, detector, flow, config)
         if auto_roi is not None:
-            config.roi = auto_roi
-            detector = DropletDetector.from_video(source, config)
+            effective_config = AnalysisConfig.from_dict(config.to_dict())
+            effective_config.roi = auto_roi
+            detector = DropletDetector.from_video(source, effective_config)
             if config.flow_direction is None:
                 # Re-estimate after removing full-frame microscope artefacts.
                 # This corrected a supplied 30-fps recording where a vertical
@@ -131,35 +151,39 @@ class DropletAnalyzer:
         preview_every = max(1, int(round(source.metadata.fps / 5.0)))
         total = source.metadata.frame_count
 
-        for frame_index, frame in source.iter_frames():
-            if cancel_check is not None and cancel_check():
-                complete = False
-                break
-            # Always decode sequentially (fast and codec-safe), but only run
-            # detector/refinement at the target analysis rate.
-            if frame_index % analysis_stride != 0 and frame_index + 1 != total:
+        # Closing the generator on an early break releases the video handle
+        # deterministically instead of waiting for garbage collection; on
+        # Windows a leaked handle keeps the recording locked.
+        with contextlib.closing(source.iter_frames()) as frames:
+            for frame_index, frame in frames:
+                if cancel_check is not None and cancel_check():
+                    complete = False
+                    break
+                # Always decode sequentially (fast and codec-safe), but only run
+                # detector/refinement at the target analysis rate.
+                if frame_index % analysis_stride != 0 and frame_index + 1 != total:
+                    processed_frames = frame_index + 1
+                    if progress_callback is not None and frame_index % preview_every == 0:
+                        progress_callback(processed_frames, total)
+                    continue
+                detections = detector.detect(frame)
+                for detection in detections:
+                    # First project the fast motion contour so the local refiner
+                    # knows its coarse longitudinal/transverse size, then replace
+                    # it with the original-frame colour envelope when possible.
+                    apply_flow_geometry(detection, flow, line_a_s)
+                    detector.refine_detection(frame, detection, flow)
+                    apply_flow_geometry(detection, flow, line_a_s)
+                detections = self._deduplicate_detections(detections)
+                assignments = tracker.update(frame_index, detections)
+                frame_overlays = [overlay_for_detection(track_id, detection, flow) for track_id, detection in assignments]
+                if frame_overlays:
+                    overlays[frame_index] = frame_overlays
                 processed_frames = frame_index + 1
-                if progress_callback is not None and frame_index % preview_every == 0:
+                if progress_callback is not None and (frame_index % preview_every == 0 or frame_index + 1 == total):
                     progress_callback(processed_frames, total)
-                continue
-            detections = detector.detect(frame)
-            for detection in detections:
-                # First project the fast motion contour so the local refiner
-                # knows its coarse longitudinal/transverse size, then replace
-                # it with the original-frame colour envelope when possible.
-                apply_flow_geometry(detection, flow, line_a_s)
-                detector.refine_detection(frame, detection, flow)
-                apply_flow_geometry(detection, flow, line_a_s)
-            detections = self._deduplicate_detections(detections)
-            assignments = tracker.update(frame_index, detections)
-            frame_overlays = [overlay_for_detection(track_id, detection, flow) for track_id, detection in assignments]
-            if frame_overlays:
-                overlays[frame_index] = frame_overlays
-            processed_frames = frame_index + 1
-            if progress_callback is not None and (frame_index % preview_every == 0 or frame_index + 1 == total):
-                progress_callback(processed_frames, total)
-            if preview_callback is not None and frame_index % preview_every == 0:
-                preview_callback(frame_index, frame, frame_overlays)
+                if preview_callback is not None and frame_index % preview_every == 0:
+                    preview_callback(frame_index, frame, frame_overlays)
 
         tracks = tracker.finalize()
 
@@ -388,6 +412,7 @@ class DropletAnalyzer:
             overlays=overlays,
             complete=complete,
             processed_frames=processed_frames,
+            skipped_frames=self._skipped_frames,
             cache_key=compute_cache_key(source.metadata.path, cache_config),
         )
 
@@ -496,6 +521,7 @@ class DropletAnalyzer:
                 try:
                     detections = detector.detect(source.read_frame(int(index)))
                 except Exception:
+                    self._skipped_frames += 1
                     continue
                 for item in detections:
                     cy = float(item.centroid[1])
@@ -519,6 +545,7 @@ class DropletAnalyzer:
             try:
                 detections = detector.detect(source.read_frame(int(index)))
             except Exception:
+                self._skipped_frames += 1
                 continue
             for item in detections:
                 cx = float(item.centroid[0])
@@ -610,6 +637,7 @@ class DropletAnalyzer:
                 try:
                     frame = source.read_frame(index)
                 except Exception:
+                    self._skipped_frames += 1
                     continue
                 current = detector.detect(frame)
                 orientations.extend([d.major_axis for d in current if d.major_axis is not None])
@@ -1012,8 +1040,8 @@ class DropletAnalyzer:
         replacement = candidates[0][1]
         return [replacement["track"]]
 
-    @staticmethod
     def _event_frame_geometry(
+        self,
         source,
         detector,
         event_time: float,
@@ -1048,6 +1076,7 @@ class DropletAnalyzer:
             try:
                 frame = source.read_frame(frame_index)
             except Exception:
+                self._skipped_frames += 1
                 continue
             detections = detector.detect(frame)
             for detection in detections:
@@ -1218,7 +1247,6 @@ class DropletAnalyzer:
             cadence = 1.2
         duplicate_window = max(0.90, min(1.80, cadence * 0.75))
 
-        tx, ty = -float(flow[1]), float(flow[0])
         time_window = max(0.72, 6.0 / max(1.0, fps))
         assignments = []
         used_local_windows: dict[int, float] = {}

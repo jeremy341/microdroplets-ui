@@ -5,9 +5,7 @@ from pathlib import Path
 
 from backend.session_manager import (
     SCHEMA_VERSION,
-    SessionError,
     SessionManager,
-    SessionValidationError,
     create_default_session,
     match_board_profile,
     validate_session,
@@ -155,6 +153,50 @@ class SessionManagerTests(unittest.TestCase):
             result = SessionManager().load(path)
             self.assertTrue(result.recovered_from_backup)
             self.assertEqual(result.session["session"]["name"], "Backup")
+
+    def test_corrupt_file_is_repaired_immediately_after_backup_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session.json"
+            backup = Path(f"{path}.bak")
+            path.write_text("{broken", encoding="utf-8")
+            backup.write_text(json.dumps(create_default_session("Backup")), encoding="utf-8")
+            result = SessionManager().load(path)
+            self.assertTrue(result.recovered_from_backup)
+            # The repaired file must be readable immediately, not only after
+            # the next save; a crash before that save must not repeat the loss.
+            repaired = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(repaired["session"]["name"], "Backup")
+
+    def test_save_does_not_rotate_a_good_backup_over_a_corrupt_primary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session.json"
+            backup = Path(f"{path}.bak")
+            good_backup = create_default_session("Last Good Save")
+            path.write_text("{corrupted on disk", encoding="utf-8")
+            backup.write_text(json.dumps(good_backup), encoding="utf-8")
+
+            manager = SessionManager()
+            manager.save_as(path)
+
+            # The new save succeeded, and the previous good backup survived:
+            # a corrupt primary must never overwrite it.
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["session"]["name"], "Unnamed Session")
+            rotated = json.loads(backup.read_text(encoding="utf-8"))
+            self.assertEqual(rotated["session"]["name"], "Last Good Save")
+
+    def test_save_rotates_a_valid_primary_into_the_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session.json"
+            backup = Path(f"{path}.bak")
+            previous = create_default_session("Previous")
+            path.write_text(json.dumps(previous), encoding="utf-8")
+
+            manager = SessionManager()
+            manager.save_as(path)
+
+            rotated = json.loads(backup.read_text(encoding="utf-8"))
+            self.assertEqual(rotated["session"]["name"], "Previous")
 
     def test_legacy_session_is_migrated_in_memory(self):
         with tempfile.TemporaryDirectory() as directory:

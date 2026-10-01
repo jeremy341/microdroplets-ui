@@ -69,3 +69,27 @@ def test_different_channels_can_be_owned_independently():
     assert ownership.get(6).kind == WAVEFORM
     service.stop(6)
     service.join(6, 1.0)
+
+
+def test_stop_all_surfaces_a_final_off_that_cannot_be_confirmed():
+    # A final physical OFF that cannot be acknowledged must not be swallowed:
+    # the channel state has to say the output state is unconfirmed.
+    class UnconfirmedOffConnection(FakeConnection):
+        def send_sequence(self, commands, *, timeout=1.0, rollback_command=None):
+            commands = tuple(commands)
+            self.sequences.append((commands, rollback_command))
+            ok = any(not c.endswith("OFF") for c in commands)
+            return CommandSequenceResult(ok, commands)
+
+    connection = UnconfirmedOffConnection()
+    ownership = ChannelOwnershipManager()
+    service = WaveExecutionService(PumpControlService(connection, ownership))
+    service.start(wave(), 2)
+    service.join(2, 1.0)
+    # The wave's own OFF was unconfirmed, so ownership is deliberately kept
+    # and stop_all() performs the final acknowledged retry.
+    service.stop_all(timeout=0.5)
+    state = service.state(2)
+    assert state is not None
+    assert state.status == "error"
+    assert "final OFF" in state.message

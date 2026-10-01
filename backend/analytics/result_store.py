@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -31,9 +32,18 @@ class ResultStore:
 
     def result_directory(self, video_path: Path) -> Path:
         safe_name = video_path.stem.replace(" ", "_")
-        return self.analytics_dir / safe_name
+        # Two videos in different folders can share a filename stem; include a
+        # fingerprint of the resolved path so their results cannot collide.
+        fingerprint = hashlib.sha1(
+            str(Path(video_path).resolve()).encode("utf-8")
+        ).hexdigest()[:10]
+        return self.analytics_dir / f"{safe_name}_{fingerprint}"
 
-    def save_result(self, result: AnalysisResult) -> Path:
+    def save_result(self, result: AnalysisResult) -> Path | None:
+        if result.complete is False:
+            # A cancelled or partial run must never be persisted: later cache
+            # hits would silently present it as a complete analysis.
+            return None
         directory = self.result_directory(result.metadata.path)
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / "analysis.json"
@@ -55,6 +65,8 @@ class ResultStore:
         if not result.metadata.path.exists():
             return None
         if result.metadata.path.resolve() != video_path.resolve():
+            return None
+        if result.complete is False:
             return None
         if expected_cache_key and result.cache_key != expected_cache_key:
             return None

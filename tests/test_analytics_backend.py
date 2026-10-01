@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 
 import cv2
@@ -117,6 +118,56 @@ def test_analysis_cancellation_returns_partial_result(tmp_path):
     )
     assert not result.complete
     assert 0 < result.processed_frames < result.metadata.frame_count
+
+
+def test_incomplete_results_are_never_cached(tmp_path):
+    store = ResultStore(tmp_path / "analytics", tmp_path / "settings.json")
+    video = _make_synthetic_video(tmp_path / "partial.avi", frames=60)
+    config = AnalysisConfig(roi=(0, 0.25, 1, 0.5), flow_direction=(1, 0), background_samples=21)
+    analyzer = DropletAnalyzer(config)
+    stop = {"value": False}
+
+    def progress(done, total):
+        if done >= total // 3:
+            stop["value"] = True
+
+    partial = analyzer.analyze(video, progress_callback=progress, cancel_check=lambda: stop["value"])
+    assert not partial.complete
+
+    # save_result refuses to persist an incomplete run, and a well-formed
+    # cached result with complete=false is rejected by load_cached.
+    assert store.save_result(partial) is None
+    assert store.load_cached(video) is None
+    planted_dir = store.result_directory(video)
+    planted_dir.mkdir(parents=True, exist_ok=True)
+    payload = partial.to_dict()
+    payload["complete"] = False
+    (planted_dir / "analysis.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+    assert store.load_cached(video) is None
+    assert store.load_cached(video, partial.cache_key) is None
+
+
+def test_auto_roi_does_not_mutate_the_user_config(tmp_path):
+    video = _make_synthetic_video(tmp_path / "auto.avi")
+    analyzer = DropletAnalyzer(AnalysisConfig(mode="auto", background_samples=21))
+    result = analyzer.analyze(video)
+    assert result.complete
+    # The auto-detected band is a run outcome (roi_px), not a setting: the
+    # persisted config must keep full-frame ROI so the next auto run can
+    # re-detect.
+    assert result.config.roi == (0.0, 0.0, 1.0, 1.0)
+    assert result.roi_px[1] > 0 or result.roi_px[3] < result.metadata.height
+
+
+def test_result_directories_do_not_collide_by_filename_stem(tmp_path):
+    store = ResultStore(tmp_path / "analytics", tmp_path / "settings.json")
+    (tmp_path / "a").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "b").mkdir(parents=True, exist_ok=True)
+    first = _make_synthetic_video(tmp_path / "a" / "run.avi", frames=10)
+    second = _make_synthetic_video(tmp_path / "b" / "run.avi", frames=10)
+    assert store.result_directory(first) != store.result_directory(second)
 
 
 def test_result_store_round_trips_settings_and_cached_result(tmp_path):

@@ -47,8 +47,19 @@ class CameraProfileStore:
     def _load(self) -> None:
         with self._lock:
             try:
-                loaded = json.loads(self.path.read_text(encoding="utf-8"))
-            except (OSError, ValueError, TypeError):
+                text = self.path.read_text(encoding="utf-8")
+            except OSError:
+                return
+            try:
+                loaded = json.loads(text)
+            except ValueError:
+                # Quarantine a corrupt profile file instead of silently
+                # discarding it: the loss must be diagnosable and the good
+                # content recoverable from the .corrupt copy.
+                try:
+                    self.path.replace(self.path.with_suffix(self.path.suffix + ".corrupt"))
+                except OSError:
+                    pass
                 return
             if isinstance(loaded, dict) and isinstance(loaded.get("devices"), dict):
                 self._data = loaded
@@ -56,6 +67,12 @@ class CameraProfileStore:
                 # old baseline may be a historical peak and is re-established
                 # from fresh samples the next time the mode is observed.
                 self._data["version"] = max(2, int(self._data.get("version", 1) or 1))
+            else:
+                # Valid JSON with the wrong shape is equally unusable.
+                try:
+                    self.path.replace(self.path.with_suffix(self.path.suffix + ".corrupt"))
+                except OSError:
+                    pass
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

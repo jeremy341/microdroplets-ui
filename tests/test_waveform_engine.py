@@ -235,3 +235,88 @@ def test_runner_executes_default_lowdriver_ch5_without_cs1_or_highdriver_quantiz
     assert "P5V30" in commands or "P5V40" in commands
     assert commands[-1] == "P5OFF"
     assert finished and finished[-1][0] is True
+
+
+def test_stop_during_startup_does_not_pulse_the_pump_on():
+    # A stop request that arrives while the start-up commands are still being
+    # issued must abort the remaining ON commands; only the first command and
+    # the final OFF may reach the transport.
+    commands = []
+    finished = []
+    wave = definition(
+        min_vpp=80,
+        max_vpp=100,
+        increment_vpp=20,
+        step_duration_ms=20,
+        cycle_duration_ms=100,
+        cycles=1,
+    )
+    runner = WaveformRunner(
+        lambda command: send(command),
+        on_finished=lambda ok, message: finished.append((ok, message)),
+    )
+
+    def send(command):
+        if not commands:
+            runner.stop()
+        commands.append(command)
+
+    runner.start(wave, 2, carrier_waveform="Sinus")
+    runner.join(1.0)
+    assert commands[0] == "F0=100"
+    assert commands[-1] == "P2OFF"
+    assert "P2ON" not in commands
+    assert finished and finished[-1][0] is False
+
+
+def test_runner_hold_timing_does_not_drift_with_slow_sends():
+    # Send latency must not accumulate: holds are scheduled against an
+    # absolute timeline, so a 5 ms-per-write transport still completes a
+    # 1000 ms waveform within a small tolerance instead of ~1.3 s.
+    import time as time_module
+
+    commands = []
+    finished = []
+
+    def send(command):
+        time_module.sleep(0.005)
+        commands.append(command)
+
+    runner = WaveformRunner(
+        send,
+        on_finished=lambda ok, message: finished.append((ok, message)),
+    )
+    wave = definition(
+        template="Sine",
+        min_vpp=60,
+        max_vpp=140,
+        increment_vpp=10,
+        step_duration_ms=100,
+        cycle_duration_ms=1000,
+        cycles=1,
+    )
+    started = time_module.monotonic()
+    runner.start(wave, 5, carrier_waveform="Sinus")
+    runner.join(3.0)
+    elapsed_ms = (time_module.monotonic() - started) * 1000.0
+    assert finished and finished[-1][0] is True
+    assert elapsed_ms < 1150.0
+
+
+def test_channel_aware_steps_merge_equal_levels_across_cycle_boundaries():
+    # A Triangle whose final sample snaps back to the minimum produces two
+    # identical holds at each cycle boundary; the merged full sequence must
+    # not contain redundant adjacent equal commands, and total duration is
+    # preserved.
+    wave = definition(
+        template="Triangle",
+        min_vpp=60,
+        max_vpp=80,
+        increment_vpp=10,
+        step_duration_ms=100,
+        cycle_duration_ms=2000,
+        cycles=5,
+    )
+    steps = generate_steps(wave, channel=5)
+    assert all(a.amplitude_vpp != b.amplitude_vpp for a, b in zip(steps, steps[1:]))
+    assert sum(step.duration_ms for step in steps) == waveform_stats(wave, channel=5).total_duration_ms == 10_000

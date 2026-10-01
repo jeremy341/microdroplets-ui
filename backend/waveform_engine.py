@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import math
 import threading
+from time import monotonic
 from typing import Callable, Iterable
 
 from backend.driver_capabilities import (
@@ -378,7 +379,7 @@ def generate_steps(
 ) -> list[WaveStep]:
     if channel is None:
         cycle = generate_cycle(definition)
-        return cycle * int(definition.cycles)
+        return _merge_adjacent_equal_steps(cycle * int(definition.cycles))
 
     # Quantize the complete sequence so equal levels at cycle boundaries can
     # be merged into one hold while preserving total duration.
@@ -386,7 +387,7 @@ def generate_steps(
     if not compatibility.valid:
         raise ValueError(compatibility.reason)
     requested_cycle = _requested_cycle(definition)
-    requested_full = requested_cycle * int(definition.cycles)
+    requested_full = _merge_adjacent_equal_steps(requested_cycle * int(definition.cycles))
     if capabilities_for_channel(channel).wave_quantization == "highdriver4_5bit":
         return _quantize_highdriver4_steps(definition, requested_full)
     return requested_full
@@ -574,6 +575,11 @@ class WaveformRunner:
             step_list = list(steps)
             if not step_list:
                 raise ValueError("Waveform contains no generated steps.")
+            # A stop request that arrived before the thread started must not
+            # still execute the start-up commands; that would pulse the pump
+            # ON for the duration of the sequence before the finally-OFF.
+            if self._stop_event.is_set():
+                return
             driver_index = driver_for_channel(channel)
             first_step = step_list[0]
             for command in pump_start_commands(
@@ -583,8 +589,16 @@ class WaveformRunner:
                 channel,
                 first_step.amplitude_vpp,
             ):
+                # A stop request arriving mid-start-up must not continue
+                # issuing ON commands; the finally block still sends OFF.
+                if self._stop_event.is_set():
+                    break
                 self._send_command(command)
 
+            # Holds are scheduled against an absolute timeline: send latency
+            # and OS timer overshoot must not accumulate across steps, or the
+            # effective wave frequency drifts far below the configured value.
+            next_deadline = monotonic()
             for index, step in enumerate(step_list, start=1):
                 if self._stop_event.is_set():
                     break
@@ -600,7 +614,9 @@ class WaveformRunner:
                     )
                 if self._on_step is not None:
                     self._on_step(index, step)
-                if self._stop_event.wait(step.duration_ms / 1000.0):
+                next_deadline += step.duration_ms / 1000.0
+                remaining = next_deadline - monotonic()
+                if self._stop_event.wait(max(0.0, remaining)):
                     break
             else:
                 completed = True

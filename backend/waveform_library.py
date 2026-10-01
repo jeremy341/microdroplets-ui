@@ -22,7 +22,16 @@ class WaveformLibrary:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self._items: list[WaveformDefinition] = []
+        # (mtime_ns, size) of the file the in-memory items were built from.
+        self._loaded_stamp: tuple[int, int] | None = None
         self.load()
+
+    def _file_stamp(self) -> tuple[int, int] | None:
+        try:
+            stat = self.path.stat()
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
 
     @property
     def items(self) -> tuple[WaveformDefinition, ...]:
@@ -117,6 +126,18 @@ class WaveformLibrary:
         return max(100, count * step_ms)
 
     def load(self) -> None:
+        """Reload the library only when the file on disk actually changed.
+
+        Views poll this method (the Workspace wave panel refreshes on a timer),
+        so an unconditional disk read plus JSON parse on every call is pure
+        avoidable I/O on the UI thread. ``save``/``delete`` keep the in-memory
+        items authoritative and refresh the stamp after writing.
+        """
+
+        stamp = self._file_stamp()
+        if stamp is not None and stamp == self._loaded_stamp:
+            return
+        self._loaded_stamp = stamp
         self._items = []
         if not self.path.exists():
             return
@@ -166,3 +187,6 @@ class WaveformLibrary:
             handle.write(text)
             temp_path = Path(handle.name)
         temp_path.replace(self.path)
+        # The in-memory items are the authoritative state after a write; keep
+        # the reload guard in sync so the next load() stays a no-op.
+        self._loaded_stamp = self._file_stamp()

@@ -241,10 +241,23 @@ class WaveExecutionService:
         for execution in executions:
             current = self.pump_control.ownership.get(execution.owner.channel)
             if current is not None and current.token == execution.owner.token:
+                channel = execution.owner.channel
                 try:
-                    self.pump_control.stop_wave(execution.owner)
-                except Exception:
-                    pass
+                    confirmed = self.pump_control.stop_wave(execution.owner)
+                    message = None if confirmed else f"CH{channel} final OFF was not acknowledged"
+                except Exception as exc:
+                    confirmed = False
+                    message = f"CH{channel} final OFF failed: {exc}"
+                if not confirmed and message is not None:
+                    # Never swallow a failed physical shutdown: surface it in
+                    # the channel's runtime state so the UI can show that the
+                    # physical output state is unconfirmed.
+                    with self._lock:
+                        state = self._states.get(channel)
+                        if state is not None:
+                            self._states[channel] = replace(
+                                state, status="error", message=message
+                            )
 
     def force_release_after_disconnect(self) -> None:
         """Clear runtime state only after the physical connection is closed."""

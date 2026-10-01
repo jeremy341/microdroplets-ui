@@ -3,6 +3,11 @@
 The logger consumes normalized samples on its own worker thread so sensor
 streaming and the Qt event loop are not blocked by disk I/O.  See
 ``docs/DEVELOPER_GUIDE.md`` for the complete sensor/logging pipeline.
+
+The column header is written lazily from the series actually received, so a
+logging session that starts before sensor detection still produces a labelled
+CSV. Series discovered mid-session rewrite the header row once so the new
+columns are labelled too.
 """
 
 from __future__ import annotations
@@ -15,6 +20,9 @@ from datetime import datetime
 from pathlib import Path
 
 CSV_HEADER = ("Timestamp",)
+# Bounds the internal queue so a stalled writer thread cannot grow memory
+# without limit. Overflow drops the oldest queued sample and is counted.
+QUEUE_LIMIT = 50_000
 
 
 @dataclass(frozen=True)
@@ -45,11 +53,12 @@ class AsyncCsvLogger:
         self.raw_path = self.path.with_name(f"{self.path.stem}_raw{self.path.suffix}")
         self.interval_seconds = max(0.1, float(interval_seconds))
         self.series_labels = tuple(series_labels)
-        self._queue: queue.Queue[LogSample | None] = queue.Queue()
+        self._queue: queue.Queue[LogSample | None] = queue.Queue(maxsize=QUEUE_LIMIT)
         self._thread: threading.Thread | None = None
         self._started_at: datetime | None = None
         self._status = "idle"
         self._error: str | None = None
+        self._dropped = 0
         self._state_lock = threading.Lock()
 
     @property
@@ -61,6 +70,13 @@ class AsyncCsvLogger:
     def error(self) -> str | None:
         with self._state_lock:
             return self._error
+
+    @property
+    def dropped_samples(self) -> int:
+        """Number of samples discarded because the write queue was full."""
+
+        with self._state_lock:
+            return self._dropped
 
     @property
     def is_accepting(self) -> bool:
@@ -80,17 +96,54 @@ class AsyncCsvLogger:
         self._thread.start()
 
     def submit(self, sample: LogSample) -> bool:
-        if not self.is_accepting:
-            return False
-        self._queue.put_nowait(sample)
+        # The status check and the enqueue must be atomic under the same lock
+        # stop() uses to flip the status: a sample either lands in the queue
+        # before the stop sentinel (and is therefore drained and written), or
+        # it is rejected. There is no accepted-but-lost window.
+        with self._state_lock:
+            if self._status not in {"starting", "running"}:
+                return False
+            try:
+                self._queue.put_nowait(sample)
+            except queue.Full:
+                # Bounded-queue policy: shed the oldest pending sample rather
+                # than growing memory without limit; the loss is counted.
+                try:
+                    self._queue.get_nowait()
+                    self._dropped += 1
+                except queue.Empty:
+                    pass
+                try:
+                    self._queue.put_nowait(sample)
+                except queue.Full:
+                    self._dropped += 1
+                    return False
         return True
 
     def stop(self, timeout: float = 2.0) -> None:
         thread = self._thread
         if thread is None:
             return
+        # Stop accepting new submissions before the sentinel so every sample
+        # accepted before stop() is still drained and written by the worker.
+        with self._state_lock:
+            if self._status in {"starting", "running"}:
+                self._status = "stopping"
+        # The sentinel must be enqueued without blocking: a worker that died
+        # mid-session leaves a full queue with no consumer, and a blocking
+        # put here would hang the caller (and the app's shutdown path).
+        while True:
+            try:
+                self._queue.put_nowait(None)
+                break
+            except queue.Full:
+                if not thread.is_alive():
+                    break
+                try:
+                    self._queue.get_nowait()
+                except queue.Empty:
+                    break
         if thread.is_alive():
-            self._queue.put(None)
             thread.join(timeout=max(0.0, timeout))
         with self._state_lock:
             if self._status not in {"failed", "stopped"}:
@@ -132,20 +185,29 @@ class AsyncCsvLogger:
                 rate_text = f"{samples_per_second:.6g}".replace(".", ",")
                 writer.writerow(("Sample Rate:", rate_text, "samples/second"))
                 writer.writerow(())
-                labels = list(self.series_labels)
-                if labels:
-                    writer.writerow(("Timestamp", *labels))
                 file.flush()
                 with self._state_lock:
                     self._status = "running"
+                labels = list(self.series_labels)
+                header_written = bool(labels)
+                if header_written:
+                    writer.writerow(("Timestamp", *labels))
 
                 sample_index = 0
 
-                def write_sample(sample: LogSample) -> None:
-                    nonlocal sample_index, labels
+                def series_label(sample: LogSample) -> str:
                     label = f"{sample.board_id} - {sample.sensor_type.replace(' ', '')}"
                     if label not in labels:
                         labels.append(label)
+                        if header_written:
+                            # A series discovered mid-session: rewrite the
+                            # header so the new column is labelled too.
+                            writer.writerow(("Timestamp", *labels))
+                    return label
+
+                def write_sample(sample: LogSample) -> None:
+                    nonlocal sample_index
+                    label = series_label(sample)
                     sample_index += 1
                     value_text = f"{sample.value:.{sample.precision}f}".replace(".", ",")
                     values = [""] * len(labels)
@@ -153,14 +215,29 @@ class AsyncCsvLogger:
                     writer.writerow((sample_index, *values))
                     file.flush()
 
+                stop_requested = False
                 while True:
-                    sample = self._queue.get()
+                    if stop_requested:
+                        # Drain samples that slipped past the is_accepting
+                        # guard (submit/stop race) so "accepted" always means
+                        # "written".
+                        try:
+                            sample = self._queue.get_nowait()
+                        except queue.Empty:
+                            break
+                    else:
+                        sample = self._queue.get()
                     if sample is None:
-                        for pending_sample in sorted(
-                            pending.values(), key=lambda item: item.timestamp
-                        ):
-                            write_sample(pending_sample)
-                        break
+                        stop_requested = True
+                        continue
+
+                    # Register the sample's series before writing the lazy
+                    # header so the first header already contains the column.
+                    series_label(sample)
+                    if not header_written:
+                        header_written = True
+                        writer.writerow(("Timestamp", *labels))
+                        file.flush()
 
                     # The sidecar is intentionally unsampled and unrounded:
                     # every parsed firmware value remains available for
@@ -197,6 +274,11 @@ class AsyncCsvLogger:
                     write_sample(current)
                     pending[series_id] = sample
                     interval_started[series_id] = sample.timestamp
+
+                for pending_sample in sorted(
+                    pending.values(), key=lambda item: item.timestamp
+                ):
+                    write_sample(pending_sample)
         except BaseException as exc:
             self._set_failed(exc)
             return

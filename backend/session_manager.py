@@ -344,6 +344,38 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
+def _stage_json(path: Path, payload: dict[str, Any]) -> Path:
+    """Durably write ``payload`` to a temp file without replacing ``path``.
+
+    The caller decides when to rotate backups and replace the target. Staging
+    first guarantees the new content exists on disk before any existing file
+    (or its backup) is touched.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        return temporary_path
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
+def _file_parses_as_json(path: Path) -> bool:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            json.load(handle)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def _device_value(device: dict[str, Any], *names: str) -> Any:
     for name in names:
         if name in device:
@@ -451,7 +483,13 @@ class SessionManager:
                         all_warnings = (f"Loaded backup after session error: {original_error}",) + tuple(warnings)
                         self.current_session = session
                         self.session_path = path
-                        self.is_dirty = True
+                        # Repair the corrupt primary immediately so a crash
+                        # before the next save cannot repeat the data loss.
+                        try:
+                            _write_json_atomic(path, _copy_json(session))
+                            self.is_dirty = False
+                        except OSError:
+                            self.is_dirty = True
                         self.last_warnings = all_warnings
                         return SessionLoadResult(
                             session=copy.deepcopy(session),
@@ -483,10 +521,22 @@ class SessionManager:
         # can never silently enter the file.
         serializable = _copy_json(session)
         backup_path: Path | None = None
-        if target.exists():
-            backup_path = Path(f"{target}.bak")
-            shutil.copy2(target, backup_path)
-        _write_json_atomic(target, serializable)
+        # Stage the new payload first: only after it is durably on disk may
+        # the existing file be rotated into the backup. A corrupt primary
+        # must never overwrite the last good backup before the new save
+        # provably succeeded.
+        temporary_path = _stage_json(target, serializable)
+        backup_path: Path | None = None
+        try:
+            if target.exists():
+                candidate = Path(f"{target}.bak")
+                if _file_parses_as_json(target):
+                    shutil.copy2(target, candidate)
+                    backup_path = candidate
+                # A corrupt primary must never overwrite the last good backup.
+            temporary_path.replace(target)
+        finally:
+            temporary_path.unlink(missing_ok=True)
         self.current_session = session
         self.session_path = target
         self.is_dirty = False

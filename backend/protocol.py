@@ -108,9 +108,18 @@ class ParsedReply:
 
 
 _NUMBER = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
-_VALUE_PATTERN = re.compile(rf"^V\s*=\s*({_NUMBER})\s*$", re.IGNORECASE)
+# Some firmware builds append the physical unit to a measurement line
+# ("V=1.25 mL/min"). Only the closed set of units the board can report is
+# accepted as a suffix, so a line that merely ends in a word ("V=1.2 extra")
+# stays unparsed instead of being guessed at.
+_KNOWN_UNIT = (
+    r"(?:[mµμu]?[lL]|L)\s*/\s*(?:min|s)|mbar|bar|kpa|ppm|ppb|%|\braw\b"
+)
+_VALUE_PATTERN = re.compile(
+    rf"^V\s*=\s*({_NUMBER})(?:\s*({_KNOWN_UNIT})\s*)?$", re.IGNORECASE
+)
 _MARKED_PATTERN = re.compile(
-    rf"^(RSLF|RSDPC|CO2|VOC)\s*(?:=|:|,|;|\s)\s*({_NUMBER})\s*$",
+    rf"^(RSLF|RSDPC|CO2|VOC)\s*(?:=|:|,|;|\s)\s*({_NUMBER})(?:\s*({_KNOWN_UNIT})\s*)?$",
     re.IGNORECASE,
 )
 _MARKER_TO_SENSOR = {
@@ -246,12 +255,14 @@ def parse_reply(line: str, active_sensor_id: str | None = None) -> ParsedReply:
 
     sensor_id: str | None = None
     value_text: str | None = None
-    match = _MARKED_PATTERN.fullmatch(clean)
+    # Match against the prefix-stripped line: a measurement must parse the
+    # same way whether or not the firmware used the console "<<" marker.
+    match = _MARKED_PATTERN.fullmatch(normalized)
     if match:
         sensor_id = _MARKER_TO_SENSOR[match.group(1).upper()]
         value_text = match.group(2)
     else:
-        match = _VALUE_PATTERN.fullmatch(clean)
+        match = _VALUE_PATTERN.fullmatch(normalized)
         if match and active_sensor_id in SENSORS:
             sensor_id = active_sensor_id
             value_text = match.group(1)
