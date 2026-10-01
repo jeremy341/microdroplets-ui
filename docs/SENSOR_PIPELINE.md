@@ -150,8 +150,23 @@ The result is µL.
 
 ### Missing-data rule
 
-If the receive gap is more than two seconds, no volume is invented across that
-gap. A new integration segment starts with the next sample.
+Integration is only performed when the receive gap is small relative to the
+sensor's own observed cadence:
+
+```text
+gap_limit = max(2.0 s, 3 × median(recent sample intervals))
+```
+
+A longer gap is treated as unknown: no volume is invented across it, and a new
+integration segment starts with the next sample. The baseline of two seconds
+keeps fast streams (a stall is never bridged), while the adaptive part means a
+legitimately slow stream (below 2 samples/second) still integrates instead of
+silently reporting 0 µL forever. Sample intervals up to 10 s feed the cadence
+estimate; longer gaps are counted as stalls and excluded from it.
+
+All integration state is guarded by one lock shared with the reset paths
+(`stop_sensor`, watchdog retry, disconnect), so a reset can never race the
+reader thread into a crash.
 
 ## 10. SensorDataHub
 

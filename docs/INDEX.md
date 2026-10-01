@@ -39,6 +39,12 @@ from Markdown before opening large PyQt or backend modules.
 | [Driver Detection](DRIVER_DETECTION.md) | safe fingerprinting and future automatic driver detection |
 | [Testing and Diagnostics](TESTING_DIAGNOSTICS.md) | test groups, hardware probes, troubleshooting order and safe diagnostic rules |
 | [Future Roadmap](FUTURE_ROADMAP.md) | known unfinished work and proposed future features |
+| [Bartels Pump Control Research](BARTELS_PUMP_CONTROL_RESEARCH.md) | protocol research notes and source-finding queries |
+| [Driver Detection README](DRIVER_DETECTION_README.md) | quick usage notes for the driver detection probe |
+| [Driver Probe Test README](DRIVER_PROBE_TEST_README.md) | quick usage notes for the driver probe test |
+| [Pump Test README](PUMP_TEST_README.md) | quick usage notes for the manual pump test script |
+| [Firmware and Pump UI Changes](FIRMWARE_AND_PUMP_UI_CHANGES.md) | change log for firmware/pump UI work |
+| [UI Redesign Plan](UI_REDESIGN_PLAN.md) | planned Tauri 2 + React migration of the PyQt6 UI |
 
 ## Page documentation
 

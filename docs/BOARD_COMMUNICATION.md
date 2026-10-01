@@ -169,18 +169,28 @@ write succeeded != hardware action confirmed
 
 `send_and_wait_for_ack()`:
 
-1. registers one pending ACK waiter;
+1. appends the command to a FIFO of outstanding commands;
 2. writes the command;
 3. waits for the reader thread to parse `OK` or an error;
 4. returns success only after the ACK is matched.
 
-Only one acknowledged command may be pending at a time.
+Several acknowledged commands may be outstanding at once. Every `OK`/`FAIL`/
+`ERR` line is attributed to the **oldest** outstanding command, because the
+board answers in wire order. A command that timed out stays in the queue, so a
+reply that arrives late is consumed by that command's own entry instead of
+acknowledging the next one. Outdated entries stop correlating replies after
+5 s (`STALE_REPLY_SECONDS`), which also bounds queue growth.
 
-Current limitation: ACK correlation is based on the command/transaction state,
-not a firmware transaction identifier. A delayed `OK` from a timed-out command
-can satisfy a later retry of the same command. Do not interpret a retry success
-as proof that the most recent physical write was the one acknowledged until this
-is fixed or ruled out by a device-specific protocol guarantee.
+The ACK wait happens outside the command lock, so a slow board blocks only the
+waiting caller, never other senders.
+
+Known limitation: correlation is positional, not a firmware transaction id. If
+a board reply is *lost* rather than late, every following rapid transaction can
+be mis-attributed until the stale head is pruned (5 s of send silence). Pump
+sequences sent less than a second apart can therefore fail spuriously after a
+single lost ACK. The failure direction is a false failure plus rollback, not a
+false success, unless replies are both lost and delayed beyond the prune window.
+A firmware build that echoes the command text would remove this class entirely.
 
 ## 6. Atomic command sequences
 
@@ -193,8 +203,12 @@ frequency
 → channel ON
 ```
 
-`send_sequence()` keeps that transaction under one re-entrant command lock so
-another pump/sensor command cannot interleave between the ACKs.
+`send_sequence()` sends its commands one by one, each with its own attributed
+ACK, and applies the caller-supplied rollback when a command is not
+acknowledged. Transport-level attribution is per command through the ACK FIFO,
+so another sender may interleave at the wire level; the business-level
+serialization (one pump operation at a time) lives in
+`backend/pump_control.py`.
 
 The normal start helper is:
 
@@ -388,20 +402,25 @@ backpressure risk until those lifecycle contracts are tightened.
 
 ## 13. Connection close behavior
 
-`MultiboardConnection.close()` is intentionally conservative:
+`MultiboardConnection.close()` always finishes the teardown:
 
 ```text
 cancel sensor initializer
-→ request POFF and wait for ACK
-→ retry POFF once if necessary
-→ if still not acknowledged: keep connection open and return False
-→ stop sensor stream
-→ stop reader
-→ close serial port
+ request POFF and wait for ACK
+ retry POFF once if necessary
+ stop sensor stream
+ stop reader thread and initializer
+ close serial port
+ return whether POFF was acknowledged
 ```
 
-A serial close is not reported as safe if the board did not confirm global pump
-shutdown.
+A failed or unacknowledged POFF never leaves a running stream, a live reader or
+an open port behind. The return value reports the power-off fact only: `False`
+means "teardown finished, but the board never confirmed the global pump
+shutdown". Calling `close()` again on an already-disconnected connection returns
+`True` without side effects, so a caller can retry and then finish its own
+cleanup. Treat an unconfirmed POFF as an unknown physical output state; it is
+reported, not silently swallowed.
 
 The application shutdown path currently does not surface every failed `close()`
 result before allowing Qt to terminate. A process exit therefore cannot by

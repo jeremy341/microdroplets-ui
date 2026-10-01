@@ -304,9 +304,21 @@ If OFF is not confirmed:
 - UI should indicate that the channel is still locked/unknown;
 - the user can retry stop.
 
-`stop_all()` is used during board/application shutdown and performs a final
-per-channel OFF retry before higher-level shutdown can fall back to global
-`POFF`.
+`WaveExecutionService.stop_all()` is used during board/application shutdown and
+performs a final per-channel OFF retry before higher-level shutdown can fall
+back to global `POFF`. A final OFF that cannot be confirmed is never swallowed:
+the channel's runtime state is set to `error` with an explicit message, so the
+UI can show that the physical output state is unconfirmed.
+
+The runner also refuses to keep powering up: a stop request that arrives before
+or during the start-up sequence aborts the remaining ON commands, so a
+"start then immediately stop" can no longer pulse the pump on.
+
+Wave step holds are scheduled against an absolute timeline: each step waits
+until the planned deadline rather than sleeping for its duration *after* the
+previous write completed. Serial write latency and OS timer overshoot therefore
+no longer accumulate, and the effective wave frequency matches the configured
+`wave_frequency_hz` instead of drifting low.
 
 Known lifecycle exception: `stop_wave()` can release ownership when the transport
 is already closed, even though OFF was not confirmed. This contradicts the
