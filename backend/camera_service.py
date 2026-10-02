@@ -42,6 +42,33 @@ EFFECTIVE_EXPOSURE_MAX_RAW = round(
 EXPOSURE_SLIDER_GAMMA = 2.0
 
 
+# CANONICAL LOCK ORDER for ``OpenCVCamera`` (coarse lock first, never inverted):
+#
+#     _property_verify_lock  ->  _lock  ->  _latest_frame_lock
+#
+# ``_property_verify_lock`` is the OUTER lock. One verified property write is a
+# single transaction that must not hold ``_lock`` while it retries, because a
+# DirectShow readback can take tens of milliseconds and the async-apply window is
+# ~180 ms; holding ``_lock`` for that window stalled read()/close() and froze the
+# GUI thread. ``_lock`` therefore only ever guards the capture handle and short
+# state transitions, and is taken *inside* the verification lock.
+#
+# Acquiring the two in the opposite order deadlocks two threads permanently: a
+# verification holding ``_property_verify_lock`` waits for ``_lock`` while a
+# brightness/exposure writer holding ``_lock`` waits for ``_property_verify_lock``
+# (the historical ABBA freeze that left the app killable only through Task
+# Manager). No method may therefore take ``_lock`` and then the verification
+# lock; ``tests/test_camera_performance_architecture.py`` enforces that
+# structurally. Neither lock is a substitute for the other: ``RLock`` only stops
+# a single thread from self-deadlocking, it cannot break a two-thread ABBA cycle.
+
+
+# Teardown must not hang on a wedged camera worker. ``close()`` waits at most
+# this long for the service lock before it forces the teardown and reports the
+# failure through its return value and ``OpenCVCamera.last_close_error``.
+CAMERA_CLOSE_TIMEOUT_SECONDS = 5.0
+
+
 # The application is built for the Dino-Lite AM4113T(R9).  Use the camera's
 # known production modes directly instead of probing or estimating frame rate.
 AM4113T_VIDEO_MODES = {
@@ -458,15 +485,25 @@ def enumerate_cameras(
 
 
 class OpenCVCamera:
-    """Thread-safe OpenCV camera wrapper used by the Qt worker."""
+    """Thread-safe OpenCV camera wrapper used by the Qt worker.
+
+    Locking contract (see the module comment): the canonical acquisition order
+    is ``_property_verify_lock`` -> ``_lock`` -> ``_latest_frame_lock``. A
+    verified property write holds the outer verification lock for the whole
+    transaction and takes the service lock only for short handle/state reads.
+    """
 
     def __init__(self) -> None:
         self._capture = None
+        # Re-entrant so the same thread may nest (for example open() -> close(),
+        # or a brightness transaction that performs a verified write). This only
+        # prevents self-deadlock; the ABBA cycle is prevented by the order above.
         self._lock = threading.RLock()
         # Serializes property verifications (which intentionally run their
         # async-apply retry outside ``_lock``) so two overlapping writes to
         # the same property cannot cross-contaminate each other's readbacks.
-        self._property_verify_lock = threading.Lock()
+        # This is the OUTER lock: acquiring it before ``_lock``, never after.
+        self._property_verify_lock = threading.RLock()
         # The newest decoded frame belongs to the shared camera runtime rather
         # than to whichever Qt page happened to render it last. Workspace and
         # the full Camera page can therefore observe the same live frame without
@@ -489,11 +526,24 @@ class OpenCVCamera:
         self.current_exposure_percent: Optional[int] = None
         self.dnx64_status: str = "not attempted"
         self.dnx64_dll_path: Optional[str] = None
+        # Set by ``close()`` when the service lock could not be acquired within
+        # the teardown budget and the release had to be forced.
+        self.last_close_error: Optional[str] = None
 
     @property
     def is_open(self) -> bool:
-        with self._lock:
-            return self._capture is not None and self._capture.isOpened()
+        """Report whether a capture handle is attached.
+
+        Deliberately lock-free. This is a status query the UI polls on every
+        interaction, so it must never block behind a wedged worker that still
+        owns ``_lock`` in a blocking driver call - that is the same freeze
+        ``close()`` used to suffer from. Every internal caller already reads it
+        inside a ``_lock`` scope, and a stale answer by a few microseconds is
+        harmless for a status flag.
+        """
+
+        capture = self._capture
+        return capture is not None and capture.isOpened()
 
     def open(
         self,
@@ -635,9 +685,13 @@ class OpenCVCamera:
 
     def read(self):
         with self._lock:
-            if not self.is_open:
+            # Read the handle into a local: a forced ``close()`` (one that could
+            # not wait for this lock) clears ``_capture`` while a driver call is
+            # still in flight, and this must not raise in the worker thread.
+            capture = self._capture
+            if capture is None or not capture.isOpened():
                 return False, None
-            return self._capture.read()
+            return capture.read()
 
     def publish_latest_frame(self, frame) -> None:
         """Publish one worker-accepted frame to every camera view."""
@@ -734,17 +788,28 @@ class OpenCVCamera:
         The asynchronous-apply retry loop runs outside the lock (bounded to a
         single ``get`` per hold) so a slow DirectShow property application
         cannot block ``close()``/``stop_camera()`` for the whole retry window.
+
+        CANONICAL LOCK ORDER: ``_property_verify_lock`` is taken here (outer)
+        and ``_lock`` only inside the transaction, so no thread ever waits for
+        the service lock while holding the verification lock and vice versa.
         """
 
         # Overlapping verifications (e.g. rapid slider changes) must not
         # cross-contaminate readbacks; serialize them without holding the
         # service lock for the retry window.
         with self._property_verify_lock:
-            return self._set_property_verified_locked(prop, value, tolerance=tolerance)
+            return self._verify_property_transaction(prop, value, tolerance=tolerance)
 
-    def _set_property_verified_locked(
+    def _verify_property_transaction(
         self, prop: int, value: float, *, tolerance: float
     ) -> CameraPropertyResult:
+        """Run one verified write. Caller must hold ``_property_verify_lock``.
+
+        The retry loop deliberately drops ``_lock`` between driver calls; the
+        serialisation guarantee comes from the outer verification lock, so
+        ``close()``/``read()`` are never blocked for the full retry budget.
+        """
+
         with self._lock:
             if not self.is_open:
                 return CameraPropertyResult(False, value, None, "camera is not open")
@@ -837,6 +902,8 @@ class OpenCVCamera:
             )
 
         target = 0.75 if enabled else 0.25
+        # CANONICAL LOCK ORDER: set_property_verified takes the verification
+        # lock itself, so it must never be called while holding ``_lock``.
         result = self.set_property_verified(
             cv2.CAP_PROP_AUTO_EXPOSURE,
             target,
@@ -873,6 +940,10 @@ class OpenCVCamera:
                 return CameraPropertyResult(False, value, None, f"DNX64 exposure failed: {exc}")
         if cv2 is None:
             return CameraPropertyResult(False, value, None, "OpenCV is not installed")
+        # Short state check only. The verified exposure writes below must run
+        # outside ``_lock``: they retry for up to ~180 ms, and holding the
+        # service lock there is what stalled close()/read() and deadlocked
+        # against a concurrent verification.
         with self._lock:
             if not self.is_open:
                 return CameraPropertyResult(False, value, None, "camera is not open")
@@ -938,34 +1009,46 @@ class OpenCVCamera:
                 return CameraPropertyResult(False, percent, None, f"DNX64 brightness failed: {exc}")
         if cv2 is None:
             return CameraPropertyResult(False, percent, None, "OpenCV is not installed")
-        with self._lock:
-            if not self.is_open:
-                return CameraPropertyResult(False, percent, None, "camera is not open")
-            try:
-                current = float(self._capture.get(cv2.CAP_PROP_BRIGHTNESS))
-            except (AttributeError, OSError, TypeError, ValueError):
-                return CameraPropertyResult(False, percent, None, "brightness is not exposed")
-            if not math.isfinite(current) or current < -1e8:
-                return CameraPropertyResult(False, percent, None, "brightness is not exposed")
+        brightness = max(0.0, min(100.0, float(percent)))
 
-            brightness = max(0.0, min(100.0, float(percent)))
+        # CANONICAL LOCK ORDER: ``_property_verify_lock`` first, ``_lock``
+        # second, never the reverse. The whole transaction (scale inference plus
+        # the verified writes) is serialized by the outer verification lock so
+        # overlapping slider writes cannot cross-contaminate each other's
+        # readbacks, while ``_lock`` is held only for the short readback and the
+        # scale-state write. Holding ``_lock`` across the verified writes was
+        # both the ABBA inversion that deadlocked ``close()`` against a
+        # concurrent verification and the reason ``close()``/``read()`` stalled
+        # for the whole retry budget.
+        with self._property_verify_lock:
+            with self._lock:
+                if not self.is_open:
+                    return CameraPropertyResult(False, percent, None, "camera is not open")
+                try:
+                    current = float(self._capture.get(cv2.CAP_PROP_BRIGHTNESS))
+                except (AttributeError, OSError, TypeError, ValueError):
+                    return CameraPropertyResult(False, percent, None, "brightness is not exposed")
+                if not math.isfinite(current) or current < -1e8:
+                    return CameraPropertyResult(False, percent, None, "brightness is not exposed")
 
-            # A non-zero readback tells us the scale on the first call. A
-            # zero readback does not, so retain the scale learned previously.
-            if self._brightness_scale is None and abs(current) > 1.5:
-                self._brightness_scale = "percent"
-            # Values in 0..1 are ambiguous: they can be a normalized driver
-            # value or a low value on a native 0..100 driver. Do not infer a
-            # scale from that readback alone.
+                scale = self._brightness_scale
 
-            if self._brightness_scale == "percent":
-                result = self.set_property_verified(
+                # A non-zero readback tells us the scale on the first call. A
+                # zero readback does not, so retain the scale learned previously.
+                if scale is None and abs(current) > 1.5:
+                    scale = "percent"
+                # Values in 0..1 are ambiguous: they can be a normalized driver
+                # value or a low value on a native 0..100 driver. Do not infer a
+                # scale from that readback alone.
+
+            if scale == "percent":
+                result = self._verify_property_transaction(
                     cv2.CAP_PROP_BRIGHTNESS,
                     brightness,
                     tolerance=0.5,
                 )
-            elif self._brightness_scale == "normalized":
-                result = self.set_property_verified(
+            elif scale == "normalized":
+                result = self._verify_property_transaction(
                     cv2.CAP_PROP_BRIGHTNESS,
                     brightness / 100.0,
                     tolerance=0.005,
@@ -975,7 +1058,7 @@ class OpenCVCamera:
                 # zero. Try the common native DirectShow range first. If the
                 # driver clamps the readback to <=1, remember normalized
                 # scale and retry using the normalized representation.
-                result = self.set_property_verified(
+                result = self._verify_property_transaction(
                     cv2.CAP_PROP_BRIGHTNESS,
                     brightness,
                     # Use a tight tolerance while the scale is unknown. A
@@ -992,12 +1075,12 @@ class OpenCVCamera:
                     # representation. Retry the native write on the next
                     # request until the driver exposes an unambiguous value.
                     if result.message == "accepted; readback pending":
-                        self._brightness_scale = None
+                        scale = None
                     elif brightness <= 1.0:
                         # A request of 0..1 does not distinguish the two
                         # possible driver representations. Keep the scale
                         # unknown until a larger request provides evidence.
-                        self._brightness_scale = None
+                        scale = None
                     elif result.applied <= 1.5:
                         # The driver accepted a value above the normalized
                         # range but read back a value within 0..1: it is a
@@ -1007,8 +1090,8 @@ class OpenCVCamera:
                         # requested 89%).  Re-issue the request in the
                         # driver's actual scale and return that verified
                         # result to the caller.
-                        self._brightness_scale = "normalized"
-                        result = self.set_property_verified(
+                        scale = "normalized"
+                        result = self._verify_property_transaction(
                             cv2.CAP_PROP_BRIGHTNESS,
                             brightness / 100.0,
                             tolerance=0.005,
@@ -1016,22 +1099,24 @@ class OpenCVCamera:
                     else:
                         # The driver read back the requested native value (or
                         # a native value in the 0..100 range).
-                        self._brightness_scale = "percent"
+                        scale = "percent"
                 elif brightness > 0.0:
                     # Only fall back to 0..1 when the native write was
-                    # actually rejected. A delayed readback is not proof of
-                    # a wrong scale and must not make the control one-way.
+                    # actually rejected. A delayed readback is not proof of a
+                    # wrong scale and must not make the control one-way.
                     native_accepted = result.message != "driver rejected the property"
                     if not native_accepted:
-                        self._brightness_scale = "normalized"
-                        result = self.set_property_verified(
+                        scale = "normalized"
+                        result = self._verify_property_transaction(
                             cv2.CAP_PROP_BRIGHTNESS,
                             brightness / 100.0,
                             tolerance=0.005,
                         )
                     else:
-                        self._brightness_scale = "percent"
+                        scale = "percent"
 
+            with self._lock:
+                self._brightness_scale = scale
             return result
 
     def get_capabilities(self) -> Optional[CameraCapabilities]:
@@ -1085,21 +1170,115 @@ class OpenCVCamera:
                 False, requested, None, f"DNX64 LED intensity failed: {exc}"
             )
 
-    def close(self) -> None:
-        with self._lock:
-            if self._capture is not None:
-                self._capture.release()
-            self._capture = None
-            self.device_index = None
-            self.sdk_index = None
-            self.dnx64_status = "not attempted"
-            self.dnx64_dll_path = None
-            if self._dnx64 is not None:
-                self._dnx64.close()
-                self._dnx64 = None
-            self.capabilities = None
-            self._brightness_scale = None
-            self._manual_exposure = None
-            self.initial_brightness_percent = None
-            self.initial_auto_exposure = None
+    def close(self, *, timeout: Optional[float] = None) -> bool:
+        """Release the camera handle without letting a wedged worker hang teardown.
+
+        ``close()`` used to wait on ``_lock`` indefinitely, so a worker stuck in
+        a blocking driver call froze the GUI thread for as long as it stayed
+        stuck (measured worst case ~56.5 s, then forever). The wait is now
+        capped at ``timeout`` seconds, defaulting to
+        :data:`CAMERA_CLOSE_TIMEOUT_SECONDS`.
+
+        Returns ``True`` when the handle was released while holding ``_lock``.
+        On timeout the teardown is *forced* instead: the service is still marked
+        closed/disconnected and the capture handle is released, ``False`` is
+        returned, and ``last_close_error`` records why. Leaving the device
+        attached after a forced close would keep the DirectShow handle busy for
+        the rest of the session and block the next open.
+        """
+
+        budget = (
+            CAMERA_CLOSE_TIMEOUT_SECONDS
+            if timeout is None
+            else max(0.0, float(timeout))
+        )
+        if not self._acquire_service_lock(budget):
+            self.last_close_error = (
+                f"camera close timed out after {budget:.2f}s; teardown was forced "
+                "because another thread still held the service lock"
+            )
+            self._force_release()
+            return False
+        try:
+            self._release_locked()
+        finally:
+            self._lock.release()
+        self.clear_latest_frame()
+        self.last_close_error = None
+        return True
+
+    def _acquire_service_lock(self, budget: float) -> bool:
+        """Acquire ``_lock`` within ``budget`` seconds.
+
+        Polling rather than ``acquire(timeout=...)`` keeps the bound explicit and
+        works for the re-entrant acquisition ``open()`` performs through
+        ``close()`` on the same thread.
+        """
+
+        deadline = time.monotonic() + max(0.0, float(budget))
+        while True:
+            if self._lock.acquire(False):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.005)
+
+    def _release_locked(self) -> None:
+        """Release every handle and reset the cached state.
+
+        Callers must hold ``_lock`` (canonical order: the verification lock
+        comes first, and ``close()`` never takes it, so this never nests).
+        """
+
+        if self._capture is not None:
+            self._capture.release()
+        self._capture = None
+        self.device_index = None
+        self.sdk_index = None
+        self.dnx64_status = "not attempted"
+        self.dnx64_dll_path = None
+        if self._dnx64 is not None:
+            self._dnx64.close()
+            self._dnx64 = None
+        self.capabilities = None
+        self._brightness_scale = None
+        self._manual_exposure = None
+        self.initial_brightness_percent = None
+        self.initial_auto_exposure = None
+
+    def _force_release(self) -> None:
+        """Release the camera handle without ``_lock`` when its owner is wedged.
+
+        Deliberately unsynchronized. The thread holding ``_lock`` is inside a
+        blocking driver call, and both failure modes are worse than this: waiting
+        forever froze the whole UI, while keeping the handle attached left the
+        camera half-open for the rest of the session. Every loop that uses the
+        capture re-checks ``self._capture`` under ``_lock`` and aborts when it no
+        longer matches the object it started with, so a verification in flight
+        stops touching the released handle on its next pass.
+        """
+
+        capture = self._capture
+        controller = self._dnx64
+        self._capture = None
+        self._dnx64 = None
+        self.device_index = None
+        self.sdk_index = None
+        self.dnx64_status = "not attempted"
+        self.dnx64_dll_path = None
+        self.capabilities = None
+        self._brightness_scale = None
+        self._manual_exposure = None
+        self.initial_brightness_percent = None
+        self.initial_auto_exposure = None
+        if controller is not None:
+            try:
+                controller.close()
+            except (AttributeError, OSError, RuntimeError, ValueError):
+                pass
+        if capture is not None:
+            try:
+                capture.release()
+            except (AttributeError, OSError, RuntimeError, ValueError):
+                pass
         self.clear_latest_frame()

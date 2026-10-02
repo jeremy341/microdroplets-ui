@@ -9,11 +9,13 @@ exposure readbacks. See ``docs/DEVELOPER_GUIDE.md``.
 from __future__ import annotations
 
 import json
+import math
 import os
+import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .fps_profiles import stable_fps
 from .application_paths import CAMERA_PROFILE_PATH
@@ -30,6 +32,93 @@ def default_profile_path() -> Path:
     return CAMERA_PROFILE_PATH
 
 
+def _fsync_directory(directory: Path) -> None:
+    """Best-effort durability for the rename itself (POSIX only)."""
+
+    try:
+        handle = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(handle)
+    except OSError:
+        pass
+    finally:
+        os.close(handle)
+
+
+def _write_durable(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically, without leaking a temp file.
+
+    A rename that becomes durable before the content does leaves a truncated
+    or empty profile file after a power cut, which the next load would have to
+    quarantine -- losing every calibration record the user owns.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            # The content has to reach the disk before the rename becomes
+            # visible, otherwise the file can be left empty.
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary_path.replace(path)
+        _fsync_directory(path.parent)
+    finally:
+        # A failed write or replace must not leave a temp file in user data.
+        temporary_path.unlink(missing_ok=True)
+
+
+def _as_int(value: Any, default: int) -> int:
+    """Coerce a stored value to ``int``, falling back to ``default``.
+
+    Profile files are only shape-checked at the root, so a single record
+    written by a buggy or interrupted build may hold ``null``, a list or a
+    non-numeric string where a number is expected.
+    """
+
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: Any, default: float) -> float:
+    """Coerce a stored value to a finite ``float``, else return ``default``."""
+
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _as_samples(value: Any) -> list[float]:
+    """Return the usable positive FPS samples from a stored sample list.
+
+    A string is rejected outright rather than iterated: ``"30"`` would
+    otherwise be read as the single sample ``3.0``.
+    """
+
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
+        return []
+    samples = []
+    for entry in value:
+        sample = _as_float(entry, 0.0)
+        if sample > 0:
+            samples.append(sample)
+    return samples
+
+
 class CameraProfileStore:
     """Thread-safe JSON store keyed by stable device ID and video mode."""
 
@@ -43,6 +132,19 @@ class CameraProfileStore:
     @staticmethod
     def mode_key(width: int, height: int, target_fps: int) -> str:
         return f"{int(width)}x{int(height)}@{int(target_fps)}"
+
+    @staticmethod
+    def device_key(device_id: Any) -> str:
+        """The single normalisation rule for device keys.
+
+        Every accessor must go through this.  A caller may pass an int index
+        or a numpy scalar from the SDK, and keying one method with the raw
+        value while another uses ``str()`` splits the profile across two keys,
+        so the record is written under one and never read back under the
+        other.
+        """
+
+        return str(device_id)
 
     def _load(self) -> None:
         with self._lock:
@@ -65,8 +167,10 @@ class CameraProfileStore:
                 self._data = loaded
                 # Version 1 profiles are intentionally kept readable.  Their
                 # old baseline may be a historical peak and is re-established
-                # from fresh samples the next time the mode is observed.
-                self._data["version"] = max(2, int(self._data.get("version", 1) or 1))
+                # from fresh samples the next time the mode is observed.  An
+                # unreadable version is treated as the oldest one rather than
+                # raised on, so a corrupt field cannot take down startup.
+                self._data["version"] = max(2, _as_int(self._data.get("version"), 1))
             else:
                 # Valid JSON with the wrong shape is equally unusable.
                 try:
@@ -75,48 +179,83 @@ class CameraProfileStore:
                     pass
 
     def _save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        temporary.write_text(
-            json.dumps(self._data, indent=2, sort_keys=True),
-            encoding="utf-8",
+        _write_durable(self.path, json.dumps(self._data, indent=2, sort_keys=True))
+
+    def _device_entry(self, device_id: Any, camera_name: str) -> dict:
+        """Return the mutable device record, repairing a wrong-shaped one."""
+
+        devices = self._data.setdefault("devices", {})
+        if not isinstance(devices, dict):
+            devices = {}
+            self._data["devices"] = devices
+        device = devices.setdefault(
+            self.device_key(device_id), {"camera_name": camera_name, "modes": {}}
         )
-        temporary.replace(self.path)
+        if not isinstance(device, dict):
+            device = {"camera_name": camera_name, "modes": {}}
+            devices[self.device_key(device_id)] = device
+        return device
+
+    @staticmethod
+    def _mode_entry(device: dict, key: str) -> dict:
+        """Return the mutable mode record, repairing a wrong-shaped one."""
+
+        modes = device.get("modes")
+        if not isinstance(modes, dict):
+            modes = {}
+            device["modes"] = modes
+        mode = modes.setdefault(key, {})
+        if not isinstance(mode, dict):
+            mode = {}
+            modes[key] = mode
+        return mode
+
+    @staticmethod
+    def _modes_map(device: Any) -> dict:
+        """Return a device's stored mode map, tolerating a wrong-shaped one."""
+
+        if not isinstance(device, dict):
+            return {}
+        modes = device.get("modes")
+        return modes if isinstance(modes, dict) else {}
 
     def mode(self, device_id: str, width: int, height: int, target_fps: int) -> dict:
         with self._lock:
-            return dict(
-                self._data.get("devices", {})
-                .get(device_id, {})
-                .get("modes", {})
-                .get(self.mode_key(width, height, target_fps), {})
-            )
+            value = self._modes_map(
+                self._data.get("devices", {}).get(self.device_key(device_id), {})
+            ).get(self.mode_key(width, height, target_fps), {})
+            return dict(value) if isinstance(value, dict) else {}
 
     def device(self, device_id: str) -> dict:
         """Return a detached snapshot of one device profile."""
 
         with self._lock:
-            value = self._data.get("devices", {}).get(str(device_id), {})
+            value = self._data.get("devices", {}).get(self.device_key(device_id), {})
             return json.loads(json.dumps(value)) if isinstance(value, dict) else {}
 
     def modes_for_resolution(self, device_id: str, width: int, height: int) -> list[dict]:
         """Return all stored FPS modes for one resolution, sorted by target."""
 
         with self._lock:
-            device = self._data.get("devices", {}).get(str(device_id), {})
-            modes = device.get("modes", {}) if isinstance(device, dict) else {}
+            modes = self._modes_map(
+                self._data.get("devices", {}).get(self.device_key(device_id), {})
+            )
             result = []
             for key, value in modes.items():
                 if not isinstance(value, dict):
                     continue
-                if int(value.get("width", -1)) != int(width):
+                # A record whose width/height is unreadable cannot match any
+                # resolution, so it is skipped rather than raised on.
+                if _as_int(value.get("width"), -1) != int(width):
                     continue
-                if int(value.get("height", -1)) != int(height):
+                if _as_int(value.get("height"), -1) != int(height):
                     continue
                 item = dict(value)
                 item["mode_key"] = str(key)
                 result.append(item)
-            return sorted(result, key=lambda item: int(item.get("target_fps", 0)))
+            return sorted(
+                result, key=lambda item: _as_int(item.get("target_fps"), 0)
+            )
 
     def ensure_device(
         self,
@@ -134,9 +273,7 @@ class CameraProfileStore:
         """
 
         with self._lock:
-            device = self._data.setdefault("devices", {}).setdefault(
-                str(device_id), {"camera_name": camera_name, "modes": {}}
-            )
+            device = self._device_entry(device_id, camera_name)
             updated = {
                 "camera_name": camera_name,
                 "hardware_exposure_min": int(hardware_min),
@@ -160,12 +297,8 @@ class CameraProfileStore:
         """Create the per-resolution/FPS record without performing a probe."""
 
         with self._lock:
-            device = self._data.setdefault("devices", {}).setdefault(
-                str(device_id), {"camera_name": "Camera", "modes": {}}
-            )
-            mode = device.setdefault("modes", {}).setdefault(
-                self.mode_key(width, height, target_fps), {}
-            )
+            device = self._device_entry(device_id, "Camera")
+            mode = self._mode_entry(device, self.mode_key(width, height, target_fps))
             updated = {
                 "width": int(width),
                 "height": int(height),
@@ -196,28 +329,18 @@ class CameraProfileStore:
         if measured_fps <= 0:
             return self.mode(device_id, width, height, target_fps)
         with self._lock:
-            device = self._data.setdefault("devices", {}).setdefault(
-                device_id,
-                {"camera_name": camera_name, "modes": {}},
-            )
+            device = self._device_entry(device_id, camera_name)
             device["camera_name"] = camera_name
             device["hardware_exposure_min"] = int(hardware_min)
             device["hardware_exposure_max"] = int(hardware_max)
-            mode = device.setdefault("modes", {}).setdefault(
-                self.mode_key(width, height, target_fps),
-                {},
-            )
-            previous = float(mode.get("baseline_fps", 0.0) or 0.0)
-            samples = [
-                float(value)
-                for value in mode.get("fps_samples", [])
-                if float(value) > 0
-            ]
+            mode = self._mode_entry(device, self.mode_key(width, height, target_fps))
+            previous = _as_float(mode.get("baseline_fps"), 0.0)
+            samples = _as_samples(mode.get("fps_samples"))
             if not samples:
                 # Do not seed the new stable baseline from the old v1 peak.
                 # Prefer the most recent real measurement and retain the old
                 # value only as diagnostic legacy data.
-                last_measured = float(mode.get("last_measured_fps", 0.0) or 0.0)
+                last_measured = _as_float(mode.get("last_measured_fps"), 0.0)
                 if previous > 0:
                     mode["legacy_baseline_fps"] = round(previous, 2)
                 if last_measured > 0:
@@ -225,10 +348,11 @@ class CameraProfileStore:
             samples.append(float(measured_fps))
             samples = samples[-8:]
             stable = stable_fps(samples)
-            peak = max(
-                [float(mode.get("peak_fps", 0.0) or 0.0), *samples]
+            peak = max([_as_float(mode.get("peak_fps"), 0.0), *samples])
+            mode_identifier = (
+                self.device_key(device_id),
+                self.mode_key(width, height, target_fps),
             )
-            mode_identifier = (device_id, self.mode_key(width, height, target_fps))
             now = time.monotonic()
             should_save = (
                 previous <= 0.0
@@ -282,12 +406,8 @@ class CameraProfileStore:
             practical_max=practical_max,
         )
         with self._lock:
-            device = self._data.setdefault("devices", {}).setdefault(
-                str(device_id), {"camera_name": camera_name, "modes": {}}
-            )
-            mode = device.setdefault("modes", {}).setdefault(
-                self.mode_key(width, height, target_fps), {}
-            )
+            device = self._device_entry(device_id, camera_name)
+            mode = self._mode_entry(device, self.mode_key(width, height, target_fps))
             mode.update(
                 {
                     "requested_fps": int(target_fps),
@@ -328,12 +448,8 @@ class CameraProfileStore:
         """
 
         with self._lock:
-            device = self._data.setdefault(
-                "devices", {}
-            ).setdefault(str(device_id), {"camera_name": "Camera", "modes": {}})
-            mode = device.setdefault("modes", {}).setdefault(
-                self.mode_key(width, height, target_fps), {}
-            )
+            device = self._device_entry(device_id, "Camera")
+            mode = self._mode_entry(device, self.mode_key(width, height, target_fps))
             mode.update(
                 {
                     "last_requested_exposure_percent": round(float(requested_percent), 2),

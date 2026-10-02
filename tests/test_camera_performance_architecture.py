@@ -1,4 +1,4 @@
-"""Static regression checks for GUI-thread performance boundaries."""
+"""Static regression checks for GUI-thread performance and locking boundaries."""
 
 import ast
 from pathlib import Path
@@ -6,6 +6,19 @@ import unittest
 
 
 CAMERA_SOURCE = Path(__file__).resolve().parents[1] / "ui" / "pages" / "Camera.py"
+CAMERA_SERVICE_SOURCE = (
+    Path(__file__).resolve().parents[1] / "backend" / "camera_service.py"
+)
+
+# ``OpenCVCamera`` must acquire its locks in the order
+# ``_property_verify_lock`` -> ``_lock`` -> ``_latest_frame_lock``. Anything that
+# reaches the verification lock from inside a service-lock scope re-creates the
+# ABBA cycle that froze the camera UI until the process was killed through Task
+# Manager: a verification holding the outer lock waits for ``_lock`` while a
+# property writer holding ``_lock`` waits for the verification lock.
+VERIFY_LOCK = "_property_verify_lock"
+INNER_LOCKS = ("_lock", "_latest_frame_lock")
+VERIFY_LOCK_OWNING_CALLS = ("set_property_verified", "_verify_property_transaction")
 
 
 class CameraPerformanceArchitectureTests(unittest.TestCase):
@@ -100,6 +113,101 @@ class CameraPerformanceArchitectureTests(unittest.TestCase):
         self.assertNotIn("self.refresh_devices()", constructor)
         self.assertIn('QPushButton("Search")', build_ui)
         self.assertIn("self.status.clicked.connect(self.refresh_devices)", build_ui)
+
+
+class CameraServiceLockOrderTests(unittest.TestCase):
+    """The camera service may never invert its lock acquisition order."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = CAMERA_SERVICE_SOURCE.read_text(encoding="utf-8")
+        cls.tree = ast.parse(cls.source)
+        for node in cls.tree.body:
+            if isinstance(node, ast.ClassDef) and node.name == "OpenCVCamera":
+                cls.methods = [
+                    child for child in node.body if isinstance(child, ast.FunctionDef)
+                ]
+                return
+        raise AssertionError("OpenCVCamera was not found in backend/camera_service.py")
+
+    @staticmethod
+    def _entered_lock(node):
+        """Return the lock name a ``with`` statement acquires, if any."""
+
+        for item in node.items:
+            expression = item.context_expr
+            if isinstance(expression, ast.Attribute):
+                return expression.attr
+        return None
+
+    @staticmethod
+    def _attribute_names(node):
+        return {
+            inner.attr
+            for inner in ast.walk(node)
+            if isinstance(inner, ast.Attribute)
+        }
+
+    @staticmethod
+    def _called_names(node):
+        return {
+            inner.func.attr
+            for inner in ast.walk(node)
+            if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute)
+        }
+
+    def test_no_service_lock_scope_reaches_the_verification_lock(self):
+        violations = []
+        for method in self.methods:
+            for node in ast.walk(method):
+                if not isinstance(node, ast.With):
+                    continue
+                held = self._entered_lock(node)
+                if held not in INNER_LOCKS:
+                    continue
+                if VERIFY_LOCK in self._attribute_names(node):
+                    violations.append(
+                        f"{method.name}: {VERIFY_LOCK} acquired inside 'with self.{held}'"
+                    )
+                for call in sorted(self._called_names(node) & set(VERIFY_LOCK_OWNING_CALLS)):
+                    violations.append(
+                        f"{method.name}: self.{call}() called inside 'with self.{held}'"
+                    )
+        self.assertEqual(violations, [], "inverted lock order:\n" + "\n".join(violations))
+
+    def test_manual_lock_acquisition_never_reaches_the_verification_lock(self):
+        violations = []
+        for method in self.methods:
+            body_names = self._attribute_names(method)
+            acquires_service_lock = any(
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+                and inner.func.attr == "acquire"
+                and inner.func.value.attr in INNER_LOCKS
+                for inner in ast.walk(method)
+            )
+            # A method may only do this when it takes the verification lock
+            # first, in which case the acquisition is already in canonical order.
+            guarded = any(
+                isinstance(node, ast.With) and self._entered_lock(node) == VERIFY_LOCK
+                for node in ast.walk(method)
+            )
+            if not acquires_service_lock or guarded:
+                continue
+            if VERIFY_LOCK in body_names:
+                violations.append(
+                    f"{method.name}: {VERIFY_LOCK} used while acquiring a service lock"
+                )
+        self.assertEqual(
+            violations,
+            [],
+            "inverted lock order:\n" + "\n".join(violations),
+        )
+
+    def test_canonical_lock_order_is_documented_in_the_module(self):
+        header = self.source[: self.source.index("class OpenCVCamera")]
+        self.assertIn("CANONICAL LOCK ORDER", header)
+        self.assertIn(f"{VERIFY_LOCK}  ->  _lock", header)
 
 
 if __name__ == "__main__":
