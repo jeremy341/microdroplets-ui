@@ -33,6 +33,23 @@ class DetectorContext:
     max_area_px: float
     artifact_mask: np.ndarray
     background_edge: np.ndarray
+    # Sample frames the background median wanted but could not decode.  A
+    # non-zero value means the surviving samples are a biased subset of the
+    # recording, so the count must travel with the context instead of being
+    # discarded inside ``build_background``.  The requested count travels with it
+    # because the skip count only means something as a share of the grid.
+    background_skipped_samples: int = 0
+    background_requested_samples: int = 0
+
+
+@dataclass(frozen=True)
+class BackgroundEstimate:
+    """Temporal-median background plus the decode integrity behind it."""
+
+    background_gray: np.ndarray
+    background_bgr: np.ndarray
+    requested_samples: int
+    skipped_samples: int
 
 
 def normalized_roi_to_px(roi: tuple[float, float, float, float], width: int, height: int) -> tuple[int, int, int, int]:
@@ -54,30 +71,58 @@ def build_background(
     source: VideoSource,
     config: AnalysisConfig,
     roi_px: tuple[int, int, int, int],
-) -> tuple[np.ndarray, np.ndarray]:
+) -> BackgroundEstimate:
     """Build colour + grayscale temporal-median backgrounds.
 
     Keeping the colour median is important for translucent droplets: their
     outer envelope can change chroma much more than luminance.
+
+    Sample frames that cannot be decoded are dropped, but never silently: the
+    count is returned so the caller can report it.  When the unreadable indices
+    cluster at one end of the recording, the surviving samples are a biased
+    subset and the resulting median is biased with them.
+
+    Losing *every* sample is a data-quality problem like any other, not a
+    programming error: the estimate then carries a well-shaped but empty
+    background whose skip count is the whole grid, so the analyzer's background
+    gate demotes the run to incomplete instead of the analysis aborting on an
+    untyped exception from the middle of the pipeline.  The placeholder is
+    deliberately empty rather than a median of something: an all-zero frame makes
+    every later detection overlap the artifact mask completely, so no geometry
+    derived from it can be presented as a valid measurement.
     """
 
     frame_count = source.metadata.frame_count
     requested = max(5, min(int(config.background_samples), 61, frame_count))
     indices = np.linspace(0, frame_count - 1, requested, dtype=int)
     samples: list[np.ndarray] = []
+    skipped_samples = 0
     for index in indices:
         try:
             roi = _read_bgr_roi(source, int(index), roi_px)
         except Exception:
+            skipped_samples += 1
             continue
         samples.append(roi)
     if not samples:
-        raise RuntimeError("Could not decode frames for Analytics background estimation.")
+        height = max(1, int(roi_px[3]))
+        width = max(1, int(roi_px[2]))
+        return BackgroundEstimate(
+            background_gray=np.zeros((height, width), dtype=np.uint8),
+            background_bgr=np.zeros((height, width, 3), dtype=np.uint8),
+            requested_samples=requested,
+            skipped_samples=skipped_samples,
+        )
     stack = np.stack(samples, axis=0)
     background_bgr = np.median(stack, axis=0).astype(np.uint8)
     background_gray = cv2.cvtColor(background_bgr, cv2.COLOR_BGR2GRAY)
     background_gray = cv2.GaussianBlur(background_gray, (5, 5), 0)
-    return background_gray, background_bgr
+    return BackgroundEstimate(
+        background_gray=background_gray,
+        background_bgr=background_bgr,
+        requested_samples=requested,
+        skipped_samples=skipped_samples,
+    )
 
 
 class DropletDetector:
@@ -93,7 +138,9 @@ class DropletDetector:
         roi_px = normalized_roi_to_px(
             config.normalized_roi(), source.metadata.width, source.metadata.height
         )
-        background_gray, background_bgr = build_background(source, config, roi_px)
+        background = build_background(source, config, roi_px)
+        background_gray = background.background_gray
+        background_bgr = background.background_bgr
         _, _, w, h = roi_px
         roi_area = float(w * h)
         min_area = float(config.min_area_px) if config.min_area_px else max(20.0, roi_area * 0.00015)
@@ -123,6 +170,8 @@ class DropletDetector:
                 max_area,
                 artifact_mask,
                 background_edge,
+                background.skipped_samples,
+                background.requested_samples,
             )
         )
 

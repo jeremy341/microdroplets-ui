@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-ANALYZER_VERSION = "3.3"
+ANALYZER_VERSION = "3.4"
 
 
 @dataclass(frozen=True)
@@ -215,7 +215,11 @@ class AnalysisSummary:
 class AnalysisResult:
     metadata: VideoMetadata
     config: AnalysisConfig
-    flow_direction: tuple[float, float]
+    # ``None`` means the recording offered no flow evidence at all.  The run
+    # still projects onto an internal axis to stay computable, but an unknown
+    # direction must never reach the persisted result as a measured vector, so
+    # it is serialized as ``null`` exactly like the optional configuration value.
+    flow_direction: tuple[float, float] | None
     roi_px: tuple[int, int, int, int]
     line_a_s: float
     line_b_s: float
@@ -233,7 +237,7 @@ class AnalysisResult:
         return {
             "metadata": self.metadata.to_dict(),
             "config": self.config.to_dict(),
-            "flow_direction": list(self.flow_direction),
+            "flow_direction": list(self.flow_direction) if self.flow_direction else None,
             "roi_px": list(self.roi_px),
             "line_a_s": self.line_a_s,
             "line_b_s": self.line_b_s,
@@ -253,10 +257,11 @@ class AnalysisResult:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AnalysisResult":
+        flow = data.get("flow_direction")
         return cls(
             metadata=VideoMetadata.from_dict(data["metadata"]),
             config=AnalysisConfig.from_dict(data["config"]),
-            flow_direction=tuple(float(v) for v in data["flow_direction"]),
+            flow_direction=None if flow is None else tuple(float(v) for v in flow),
             roi_px=tuple(int(v) for v in data["roi_px"]),
             line_a_s=float(data["line_a_s"]),
             line_b_s=float(data["line_b_s"]),

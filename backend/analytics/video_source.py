@@ -23,6 +23,11 @@ class VideoSource:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path).expanduser().resolve()
         self._capture: cv2.VideoCapture | None = None
+        # Decode integrity of the most recent ``iter_frames`` pass.  Callers
+        # must be able to distinguish "the clip ended" from "the decoder gave
+        # up part-way through", because a truncated recording otherwise looks
+        # exactly like a short one.
+        self.decode_truncated = False
         self.metadata = self._probe()
 
     def _new_capture(self) -> cv2.VideoCapture:
@@ -88,9 +93,17 @@ class VideoSource:
             if start:
                 capture.set(cv2.CAP_PROP_POS_FRAMES, start)
             index = start
+            # Refreshed per pass: this describes the pass that is running (or
+            # has just finished), never a previous one.
+            self.decode_truncated = False
             while index < self.metadata.frame_count:
                 ok, frame = capture.read()
                 if not ok or frame is None:
+                    # Stopping here means the decoder could not reach
+                    # ``metadata.frame_count``.  Recording that explicitly keeps
+                    # a truncated / partially corrupt file from masquerading as
+                    # a recording that genuinely has fewer frames.
+                    self.decode_truncated = True
                     break
                 yield index, frame
                 index += 1

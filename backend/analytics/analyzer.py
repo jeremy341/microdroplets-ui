@@ -7,7 +7,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 import cv2
 import numpy as np
@@ -37,6 +37,71 @@ from .video_source import VideoSource
 ProgressCallback = Callable[[int, int], None]
 PreviewCallback = Callable[[int, np.ndarray, list[OverlayDetection]], None]
 CancelCheck = Callable[[], bool]
+
+
+# A background temporal median is only trustworthy while most of the requested
+# sample grid actually decoded.  Unreadable samples are not scattered randomly:
+# they cluster (a corrupt tail, a broken keyframe interval), so the survivors
+# can all come from one end of the recording and bias every downstream
+# detection.  Below these limits the run is demoted to incomplete, which also
+# keeps ``ResultStore.save_result`` from persisting the skewed result as
+# authoritative.  The ratio sits below one half because losing roughly a third of
+# the grid already destroys the temporal spread the median exists to capture,
+# while the occasional unreadable frame on an otherwise healthy recording must
+# stay cacheable.
+BACKGROUND_MAX_SKIP_RATIO = 0.30
+# Absolute floor for the small sample counts short clips end up with: a "median"
+# over fewer than this many frames is not a median in any robust sense.
+BACKGROUND_MIN_USABLE_SAMPLES = 4
+
+# The pre-pass estimation helpers (auto channel ROI, flow direction, event
+# geometry) random-access their own sample frames before and after the main
+# frame pass, and they are exposed to the same clustered decode damage as the
+# background grid.  A read that fails there is counted but, unlike the frame
+# pass, nothing downstream can tell a band, an axis or a repair measured from
+# one end of the recording apart from a healthy one, so the same two limits
+# apply with the same rationale.
+ESTIMATION_MAX_SKIP_RATIO = 0.30
+# Absolute floor for the short read grids these helpers use: the 8-frame blocks
+# of the flow estimator, the ~32-frame ROI band sweep and the 5-frame
+# event-geometry window.  Fewer readable frames than this and the derived value
+# is a guess, not a measurement.
+ESTIMATION_MIN_USABLE_READS = 4
+
+# Pure geometry placeholder: the axis a recording gets when it offers no motion
+# evidence at all.  It keeps the pass computable (projection, tracker and
+# overlays all need *an* axis) and is never reported as a measurement - the run
+# records an unknown flow direction instead.  This is the axis most current lab
+# recordings show, so it is the least arbitrary choice available.
+FALLBACK_FLOW_AXIS = (1.0, 0.0)
+
+
+def background_estimate_is_degraded(skipped_samples: int, requested_samples: int) -> bool:
+    """Report whether a background sample grid is too damaged to build on."""
+
+    skipped = max(0, int(skipped_samples))
+    requested = int(requested_samples)
+    if requested <= 0:
+        # No grid was recorded (a hand-built context), so the only evidence of
+        # degradation is an outright loss of samples.
+        return skipped > 0
+    if requested - skipped < BACKGROUND_MIN_USABLE_SAMPLES:
+        return True
+    return skipped > requested * BACKGROUND_MAX_SKIP_RATIO
+
+
+def estimation_is_degraded(skipped_reads: int, requested_reads: int) -> bool:
+    """Report whether a helper's random-access read grid is too damaged to trust."""
+
+    skipped = max(0, int(skipped_reads))
+    requested = int(requested_reads)
+    if requested <= 0:
+        # The helper needed no frame at all (no estimation grid, no repair to
+        # make), so there is no damage to judge.
+        return skipped > 0
+    if requested - skipped < ESTIMATION_MIN_USABLE_READS:
+        return True
+    return skipped > requested * ESTIMATION_MAX_SKIP_RATIO
 
 
 def _unit(vector: tuple[float, float]) -> tuple[float, float]:
@@ -70,8 +135,32 @@ def compute_cache_key(path: Path, config: AnalysisConfig) -> str:
 class DropletAnalyzer:
     """Offline analyzer with no GUI dependency."""
 
+    # Per-run counters.  They are class-level defaults so a bare analyzer is safe
+    # to drive incrementally: ``_detector_for``, ``_record_estimation_reads`` and
+    # the frame-repair helpers read and increment them, and callers can
+    # legitimately reach those helpers (or drive a cancellation) without
+    # ``analyze`` having zeroed them first.  ``analyze`` re-initialises all of
+    # them at the start of every run.
+    _skipped_frames: int = 0
+    _background_degraded: bool = False
+    _estimation_degraded: bool = False
+
     def __init__(self, config: AnalysisConfig | None = None) -> None:
         self.config = config or AnalysisConfig()
+        self._reset_run_state()
+
+    def _reset_run_state(self) -> None:
+        """Initialise the per-run counters.
+
+        ``_failed_frame_indices`` is per-run *instance* state rather than another
+        class-level default because it is a mutable set: a shared class-level one
+        would leak recorded decode failures from one analyzer into the next.
+        """
+
+        self._skipped_frames = 0
+        self._background_degraded = False
+        self._estimation_degraded = False
+        self._failed_frame_indices: set[int] = set()
 
     def analyze(
         self,
@@ -89,7 +178,7 @@ class DropletAnalyzer:
         # config itself is never mutated: the auto-detected ROI is an outcome
         # of one run, not a setting the user asked for.
         cache_config = AnalysisConfig.from_dict(config.to_dict())
-        self._skipped_frames = 0
+        self._reset_run_state()
         source.open()
         try:
             return self._analyze_with_source(source, config, cache_config, progress_callback, preview_callback, cancel_check)
@@ -105,20 +194,40 @@ class DropletAnalyzer:
         preview_callback: PreviewCallback | None,
         cancel_check: CancelCheck | None,
     ) -> AnalysisResult:
-        detector = DropletDetector.from_video(source, config)
-        flow = _unit(config.flow_direction or self._estimate_flow_direction(source, detector))
+        detector = self._detector_for(source, config)
+        # ``_estimate_flow_direction`` returns ``None`` when the recording offers
+        # no motion evidence at all.  Geometry still needs an axis to project
+        # onto, so ``FALLBACK_FLOW_AXIS`` keeps the pass running - but it is a
+        # placeholder, never a measurement: ``flow_measured`` stays False, the
+        # result reports an unknown direction and the run is demoted below, so a
+        # fabricated "left-to-right" can neither be cached nor read back as
+        # measured evidence.
+        flow_measured = config.flow_direction is not None
+        flow = _unit(config.flow_direction) if flow_measured else FALLBACK_FLOW_AXIS
+        if not flow_measured:
+            estimated = self._estimate_flow_direction(source, detector)
+            if estimated is not None:
+                flow = _unit(estimated)
+                flow_measured = True
 
         auto_roi = self._auto_channel_roi(source, detector, flow, config)
         if auto_roi is not None:
             effective_config = AnalysisConfig.from_dict(config.to_dict())
             effective_config.roi = auto_roi
-            detector = DropletDetector.from_video(source, effective_config)
+            detector = self._detector_for(source, effective_config)
             if config.flow_direction is None:
                 # Re-estimate after removing full-frame microscope artefacts.
                 # This corrected a supplied 30-fps recording where a vertical
                 # obstruction previously dominated the motion estimator even
                 # though the real microfluidic channel was horizontal.
-                flow = _unit(self._estimate_flow_direction(source, detector))
+                estimated = self._estimate_flow_direction(source, detector)
+                if estimated is not None:
+                    flow = _unit(estimated)
+                    flow_measured = True
+                # A narrowed ROI that yields nothing does not retract a
+                # direction already measured on the full frame: the first
+                # estimate is still evidence.  The failed re-read is reported
+                # and gated through ``_record_estimation_reads`` either way.
 
         roi_px = detector.context.roi_px
         min_s, max_s = _projection_bounds(roi_px, flow)
@@ -184,6 +293,37 @@ class DropletAnalyzer:
                     progress_callback(processed_frames, total)
                 if preview_callback is not None and frame_index % preview_every == 0:
                     preview_callback(frame_index, frame, frame_overlays)
+
+        # A pass that stopped on a decode failure, or simply never reached the
+        # reported frame count, analysed only part of the recording.  Treating
+        # that as complete both under-reports droplets and lets
+        # ``ResultStore.save_result`` cache the partial answer as authoritative,
+        # so the run is marked incomplete exactly like a cancelled one.
+        if source.decode_truncated or processed_frames < total:
+            complete = False
+
+        # ``build_background`` cannot report that its median was taken from a
+        # sample grid that mostly failed to decode, so this gate is where that
+        # damage is caught.  A background built from one end of the recording
+        # biases every detection, yet the frame pass itself looks perfectly
+        # complete, so nothing downstream would object.  Reporting the run as
+        # incomplete is the conservative direction: it is never cached as
+        # authoritative and the temporal second opinion (which shares the same
+        # background) is skipped, exactly as for a truncated or cancelled pass.
+        if self._background_degraded:
+            complete = False
+
+        # Two further ways for the frame pass to look perfect while the run is
+        # not trustworthy, both decided before it started.  The pre-pass helpers
+        # lost too many of their random-access sample frames - a channel band, a
+        # flow axis or a median derived from whatever survived, often from one
+        # end of the recording - which is the identical hole the background gate
+        # above covers and which nothing downstream could object to.  And a
+        # recording that produced no flow evidence at all has ``flow`` set to a
+        # geometric placeholder rather than a measurement.  Either way the run
+        # must not be reported, cached or reused as an authoritative answer.
+        if self._estimation_degraded or not flow_measured:
+            complete = False
 
         tracks = tracker.finalize()
 
@@ -391,6 +531,15 @@ class DropletAnalyzer:
                     if measurement.valid:
                         overlay_valid_track_ids.add(track.track_id)
         measurements.sort(key=lambda item: item.timestamp_s)
+
+        # ``_event_frame_geometry`` reads its repair frames lazily while the
+        # measurements above are assembled, so its own read gate can only be
+        # applied here.  Re-checking the same flag is safe: it is set and never
+        # cleared, so this is a superset of the check made before the temporal
+        # second opinion, not a second verdict on the same evidence.
+        if self._estimation_degraded:
+            complete = False
+
         self._add_spacing(measurements, config)
 
         summary = self._build_summary(measurements, temporal_times, source.metadata.fps)
@@ -402,7 +551,7 @@ class DropletAnalyzer:
         return AnalysisResult(
             metadata=source.metadata,
             config=config,
-            flow_direction=flow,
+            flow_direction=flow if flow_measured else None,
             roi_px=roi_px,
             line_a_s=line_a_s,
             line_b_s=line_b_s,
@@ -415,6 +564,50 @@ class DropletAnalyzer:
             skipped_frames=self._skipped_frames,
             cache_key=compute_cache_key(source.metadata.path, cache_config),
         )
+
+    def _detector_for(self, source: VideoSource, config: AnalysisConfig) -> DropletDetector:
+        """Build a detector and charge its unreadable background samples.
+
+        ``build_background`` drops sample frames it cannot decode.  When those
+        indices sit at the tail of the recording, the samples that survive are
+        all from the head, which biases the median background and therefore
+        every downstream detection.  The count is added to the run's
+        ``skipped_frames`` so the degradation is visible on the result instead
+        of vanishing inside the estimator, and a grid too damaged to trust marks
+        the run so it cannot be reported or cached as complete.
+        """
+        detector = DropletDetector.from_video(source, config)
+        context = detector.context
+        self._skipped_frames += context.background_skipped_samples
+        if background_estimate_is_degraded(
+            context.background_skipped_samples, context.background_requested_samples
+        ):
+            self._background_degraded = True
+        return detector
+
+    def _record_estimation_reads(
+        self, failed_indices: Sequence[int], requested: int
+    ) -> None:
+        """Charge a helper's unreadable sample reads and gate the run on them.
+
+        The channel-ROI sweep, the flow blocks and the event-geometry window all
+        sample the same recording, so a single unreadable frame is routinely hit
+        by more than one helper.  ``_failed_frame_indices`` keeps the run's
+        ``skipped_frames`` an honest count of *distinct* frames lost, which is
+        also what makes it comparable to the background tally, while every helper
+        is still judged on its own evidence: a second failed attempt at an
+        already-recorded frame is real damage to that helper's grid even though
+        it is not a new frame to charge.
+        """
+
+        for frame_index in failed_indices:
+            index = int(frame_index)
+            if index in self._failed_frame_indices:
+                continue
+            self._failed_frame_indices.add(index)
+            self._skipped_frames += 1
+        if estimation_is_degraded(len(failed_indices), requested):
+            self._estimation_degraded = True
 
     @staticmethod
     def _wall_band(profile: np.ndarray, center: float, dimension: int) -> tuple[float, float] | None:
@@ -513,26 +706,40 @@ class DropletAnalyzer:
 
         count = source.metadata.frame_count
         indices = np.linspace(0, max(0, count - 1), min(32, max(8, count)), dtype=int)
-        centers: list[float] = []
-        if horizontal:
-            peak = float(int(np.argmax(row_profile)))
-            half = max(45.0, source.metadata.height * 0.10)
+
+        def sampled_axis(peak: float, half: float, axis: int) -> list[float]:
+            """Centroid positions along ``axis`` on a sampled frame grid.
+
+            The band this routine helps to place is only as good as the frames it
+            could actually read, so every unreadable sample is charged to the run
+            and gated like the background grid instead of merely bumping
+            ``skipped_frames``.
+            """
+
+            centers: list[float] = []
+            failed: list[int] = []
             for index in indices:
                 try:
                     detections = detector.detect(source.read_frame(int(index)))
                 except Exception:
-                    self._skipped_frames += 1
+                    failed.append(int(index))
                     continue
                 for item in detections:
-                    cy = float(item.centroid[1])
-                    if abs(cy - peak) <= half * 1.35:
-                        centers.append(cy)
+                    value = float(item.centroid[axis])
+                    if abs(value - peak) <= half * 1.35:
+                        centers.append(value)
+            self._record_estimation_reads(failed, len(indices))
+            return centers
+
+        if horizontal:
+            peak = float(int(np.argmax(row_profile)))
+            half = max(45.0, source.metadata.height * 0.10)
+            centers = sampled_axis(peak, half, 1)
             center = float(np.median(centers)) if len(centers) >= 3 else peak
             walls = self._wall_band(row_profile, center, source.metadata.height)
             if walls is not None:
                 y0, y1 = walls
             else:
-                half = max(45.0, source.metadata.height * 0.10)
                 y0 = max(0.0, center - half)
                 y1 = min(float(source.metadata.height), center + half)
             if y1 - y0 < 60:
@@ -541,16 +748,7 @@ class DropletAnalyzer:
 
         peak = float(int(np.argmax(col_profile)))
         half = max(45.0, source.metadata.width * 0.10)
-        for index in indices:
-            try:
-                detections = detector.detect(source.read_frame(int(index)))
-            except Exception:
-                self._skipped_frames += 1
-                continue
-            for item in detections:
-                cx = float(item.centroid[0])
-                if abs(cx - peak) <= half * 1.35:
-                    centers.append(cx)
+        centers = sampled_axis(peak, half, 0)
         center = float(np.median(centers)) if len(centers) >= 3 else peak
         walls = self._wall_band(col_profile, center, source.metadata.width)
         if walls is not None:
@@ -617,27 +815,40 @@ class DropletAnalyzer:
             config.calibration.resolution = (source.metadata.width, source.metadata.height)
         return config
 
-    def _estimate_flow_direction(self, source: VideoSource, detector: DropletDetector) -> tuple[float, float]:
+    def _estimate_flow_direction(
+        self, source: VideoSource, detector: DropletDetector
+    ) -> tuple[float, float] | None:
         """Estimate direction from short adjacent-frame blocks, then contour orientation.
 
         The sign comes from actual centroid motion whenever possible.  The
         orientation fallback is useful for slower recordings where a droplet
         barely moves between adjacent frames.
+
+        Returns ``None`` when the recording offers no usable evidence at all - no
+        motion vector *and* no contour orientation, as for a clip whose frames
+        never decoded or whose channel is simply empty.  That is reported as an
+        unknown direction rather than guessed: a silent wrong direction is worse
+        than a missing one, and ``(1.0, 0.0)`` in the exported result is
+        indistinguishable from a measured one.
         """
 
         count = source.metadata.frame_count
         if count < 2:
-            return (1.0, 0.0)
+            # A single frame cannot show motion, so it cannot show a direction.
+            return None
         block_starts = sorted({0, max(0, count // 3), max(0, 2 * count // 3)})
         motion_vectors: list[tuple[float, float]] = []
         orientations: list[tuple[float, float]] = []
+        failed: list[int] = []
+        attempted = 0
         for start in block_starts:
             previous = None
             for index in range(start, min(count, start + 8)):
+                attempted += 1
                 try:
                     frame = source.read_frame(index)
                 except Exception:
-                    self._skipped_frames += 1
+                    failed.append(index)
                     continue
                 current = detector.detect(frame)
                 orientations.extend([d.major_axis for d in current if d.major_axis is not None])
@@ -662,6 +873,10 @@ class DropletAnalyzer:
                                 (after.centroid[0] - before.centroid[0], after.centroid[1] - before.centroid[1])
                             )
                 previous = current
+        # The blocks that could not be decoded carry no evidence about the flow
+        # axis, so the run is gated on them for the same reason the background
+        # grid is: what survives may all come from one part of the recording.
+        self._record_estimation_reads(failed, attempted)
         if motion_vectors:
             vectors = np.asarray(motion_vectors, dtype=float)
             norms = np.linalg.norm(vectors, axis=1)
@@ -680,8 +895,12 @@ class DropletAnalyzer:
             if vector[0] < 0:
                 vector = (-vector[0], -vector[1])
             return _unit(vector)
-        # Most current lab recordings show a horizontal channel.
-        return (1.0, 0.0)
+        # No motion vector and no contour orientation: the recording says nothing
+        # about which way the channel runs.  Returning a "reasonable" horizontal
+        # vector here is how a fabricated direction reaches the exported result,
+        # indistinguishable from a measured one; report the direction as unknown
+        # and let the caller keep the pass alive on a labelled placeholder axis.
+        return None
 
     @staticmethod
     def _remap_overlays(overlays, id_map):
@@ -1071,12 +1290,13 @@ class DropletAnalyzer:
             for offset in offsets_s
         })
         candidates = []
+        failed: list[int] = []
         reference = float(typical_length)
         for frame_index in frame_indices:
             try:
                 frame = source.read_frame(frame_index)
             except Exception:
-                self._skipped_frames += 1
+                failed.append(frame_index)
                 continue
             detections = detector.detect(frame)
             for detection in detections:
@@ -1115,6 +1335,10 @@ class DropletAnalyzer:
                     - (0.10 if detection.refined_geometry else 0.0)
                 )
                 candidates.append((score, frame_index, detection))
+        # A repair window that mostly failed to decode did not repair anything,
+        # and the measurement keeps geometry nobody can vouch for.  Gate the run
+        # on the same evidence the background grid is gated on.
+        self._record_estimation_reads(failed, len(frame_indices))
         if not candidates:
             return None
         candidates.sort(key=lambda item: item[0])

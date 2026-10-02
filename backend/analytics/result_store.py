@@ -26,8 +26,14 @@ class ResultStore:
             return AnalysisConfig()
         try:
             data = json.loads(self.settings_path.read_text(encoding="utf-8"))
+            # Valid JSON is not necessarily a settings object.  ``null``, a list
+            # or a bare string parse fine but ``AnalysisConfig.from_dict`` calls
+            # ``data.get(...)``, whose ``AttributeError`` would escape page
+            # construction instead of degrading to defaults.
+            if not isinstance(data, dict):
+                return AnalysisConfig()
             return AnalysisConfig.from_dict(data)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
             return AnalysisConfig()
 
     def result_directory(self, video_path: Path) -> Path:
