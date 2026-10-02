@@ -2,9 +2,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from backend.session_manager import (
     SCHEMA_VERSION,
+    SessionError,
     SessionManager,
     create_default_session,
     match_board_profile,
@@ -197,6 +199,118 @@ class SessionManagerTests(unittest.TestCase):
 
             rotated = json.loads(backup.read_text(encoding="utf-8"))
             self.assertEqual(rotated["session"]["name"], "Previous")
+
+    def test_failed_backup_copy_cannot_destroy_the_last_good_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session.json"
+            backup = Path(f"{path}.bak")
+            path.write_text(json.dumps(create_default_session("Revision 1")), encoding="utf-8")
+            backup.write_text(json.dumps(create_default_session("Revision 0")), encoding="utf-8")
+
+            manager = SessionManager()
+            manager.current_session["session"]["name"] = "Revision 2"
+            manager.mark_dirty()
+
+            def truncating_copy(source, destination, *args, **kwargs):
+                # Reproduce copy2 semantics: the destination is truncated and
+                # only partly written before the copy fails.
+                Path(destination).write_text('{"truncated', encoding="utf-8")
+                raise OSError("simulated copy failure")
+
+            with mock.patch("shutil.copy2", truncating_copy):
+                with self.assertRaises(SessionError) as caught:
+                    manager.save_as(path)
+
+            self.assertIn("simulated copy failure", str(caught.exception))
+            # The last good backup survived the failed rotation, and so did the
+            # previous revision of the primary: no revision is lost.
+            self.assertEqual(
+                json.loads(backup.read_text(encoding="utf-8"))["session"]["name"], "Revision 0"
+            )
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8"))["session"]["name"], "Revision 1"
+            )
+            # Nothing was left behind by the interrupted rotation.
+            self.assertEqual(
+                sorted(item.name for item in Path(directory).iterdir()),
+                sorted([backup.name, path.name]),
+            )
+            self.assertTrue(manager.is_dirty)
+
+    def test_failed_target_replace_keeps_the_previous_revision_recoverable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session.json"
+            backup = Path(f"{path}.bak")
+            path.write_text(json.dumps(create_default_session("Revision 1")), encoding="utf-8")
+
+            manager = SessionManager()
+            manager.current_session["session"]["name"] = "Revision 2"
+            manager.mark_dirty()
+
+            original_replace = Path.replace
+
+            def failing_replace(self, target, *args, **kwargs):
+                if Path(target) == path:
+                    raise OSError("simulated replace failure")
+                return original_replace(self, target, *args, **kwargs)
+
+            with mock.patch.object(Path, "replace", failing_replace):
+                with self.assertRaises(SessionError) as caught:
+                    manager.save_as(path)
+
+            self.assertIn("simulated replace failure", str(caught.exception))
+            # The primary still loads as its previous revision, and the backup
+            # still provides that same recoverable copy.
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8"))["session"]["name"], "Revision 1"
+            )
+            self.assertEqual(
+                json.loads(backup.read_text(encoding="utf-8"))["session"]["name"], "Revision 1"
+            )
+            self.assertEqual(
+                SessionManager().load(path).session["session"]["name"], "Revision 1"
+            )
+            # A failed save is never reported as saved, and leaves no litter.
+            self.assertTrue(manager.is_dirty)
+            self.assertIsNone(manager.session_path)
+            self.assertEqual(
+                sorted(item.name for item in Path(directory).iterdir()),
+                sorted([backup.name, path.name]),
+            )
+
+    def test_unloadable_primary_is_not_rotated_over_the_good_backup(self):
+        unloadable_primaries = {
+            "unknown schema version": {
+                "schema_version": SCHEMA_VERSION + 1,
+                "session": {"name": "Future Format"},
+                "board_profiles": [],
+            },
+            "absent schema version": {"name": "Legacy", "rows": []},
+        }
+        for label, payload in unloadable_primaries.items():
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "session.json"
+                    backup = Path(f"{path}.bak")
+                    path.write_text(json.dumps(payload), encoding="utf-8")
+                    backup.write_text(
+                        json.dumps(create_default_session("Last Good Save")), encoding="utf-8"
+                    )
+
+                    result = SessionManager().save_as(path)
+
+                    # The save itself succeeded ...
+                    self.assertIsNone(result.backup_path)
+                    self.assertEqual(
+                        json.loads(path.read_text(encoding="utf-8"))["session"]["name"],
+                        "Unnamed Session",
+                    )
+                    # ... without letting content the loader would reject
+                    # displace the last good backup.
+                    self.assertEqual(
+                        json.loads(backup.read_text(encoding="utf-8"))["session"]["name"],
+                        "Last Good Save",
+                    )
 
     def test_legacy_session_is_migrated_in_memory(self):
         with tempfile.TemporaryDirectory() as directory:

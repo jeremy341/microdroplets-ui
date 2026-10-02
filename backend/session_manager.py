@@ -367,13 +367,43 @@ def _stage_json(path: Path, payload: dict[str, Any]) -> Path:
         raise
 
 
-def _file_parses_as_json(path: Path) -> bool:
+def _rotate_backup(target: Path, backup: Path) -> None:
+    """Rotate ``target`` into ``backup`` without ever damaging ``backup``.
+
+    ``shutil.copy2`` truncates the destination before it writes, so a failure
+    part-way through (full disk, antivirus, permissions) would destroy the last
+    good backup while the primary is still being replaced.  Copying into a
+    sibling temp file and renaming it into place keeps the existing backup
+    intact unless the copy completed, and leaves the rename atomic.
+    """
+
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{backup.name}.", suffix=".tmp", dir=backup.parent)
+    temporary_path = Path(temporary_name)
+    os.close(fd)
+    try:
+        shutil.copy2(target, temporary_path)
+        temporary_path.replace(backup)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
+def _file_holds_current_session(path: Path) -> bool:
+    """Return True only when the file holds a loadable session of this schema.
+
+    Rotating a backup is only safe when the file being rotated could actually be
+    loaded again.  Valid JSON with a missing or foreign ``schema_version`` is
+    *not* loadable (``migrate_session``/``validate_session`` reject it), so such
+    a file must never displace the last good backup.  A missing or unreadable
+    file also reports False.
+    """
+
     try:
         with path.open("r", encoding="utf-8") as handle:
-            json.load(handle)
+            payload = json.load(handle)
     except (OSError, ValueError):
         return False
-    return True
+    return isinstance(payload, dict) and payload.get("schema_version") == SCHEMA_VERSION
 
 
 def _device_value(device: dict[str, Any], *names: str) -> Any:
@@ -520,7 +550,6 @@ class SessionManager:
         # Validate the serialized representation too, so runtime-only values
         # can never silently enter the file.
         serializable = _copy_json(session)
-        backup_path: Path | None = None
         # Stage the new payload first: only after it is durably on disk may
         # the existing file be rotated into the backup. A corrupt primary
         # must never overwrite the last good backup before the new save
@@ -528,15 +557,26 @@ class SessionManager:
         temporary_path = _stage_json(target, serializable)
         backup_path: Path | None = None
         try:
-            if target.exists():
+            # A corrupt or foreign-schema primary must never overwrite the last
+            # good backup, and the rotation itself is atomic.
+            if target.exists() and _file_holds_current_session(target):
                 candidate = Path(f"{target}.bak")
-                if _file_parses_as_json(target):
-                    shutil.copy2(target, candidate)
-                    backup_path = candidate
-                # A corrupt primary must never overwrite the last good backup.
+                _rotate_backup(target, candidate)
+                backup_path = candidate
             temporary_path.replace(target)
-        finally:
-            temporary_path.unlink(missing_ok=True)
+        except OSError as error:
+            # ``replace`` is atomic, so a failure leaves the target holding the
+            # previous revision. Drop the staged payload only when a loadable
+            # copy of the session survives; otherwise keep it as the last
+            # recoverable file. The failure is always surfaced to the caller.
+            if _file_holds_current_session(target) or (
+                backup_path is not None and _file_holds_current_session(backup_path)
+            ):
+                temporary_path.unlink(missing_ok=True)
+            raise SessionError(f"Could not save session '{target}': {error}") from error
+        # A successful ``replace`` already moved the staged file into place;
+        # this unlink is the no-op safety net for platforms that copy.
+        temporary_path.unlink(missing_ok=True)
         self.current_session = session
         self.session_path = target
         self.is_dirty = False
