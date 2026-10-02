@@ -9,7 +9,27 @@ Reply correlation: the Multiboard2 acknowledges every command with a bare
 and every incoming ack/error reply is attributed to the oldest outstanding
 command (boards answer in wire order). A command whose reply timed out stays
 in the queue, so its late reply is consumed correctly instead of being
-mistaken for the acknowledgement of the next command.
+mistaken for the acknowledgement of the next command; such an entry is marked
+abandoned and may be released after ``STALE_REPLY_SECONDS``, while an entry
+whose waiter is still blocked is never pruned. Conversely, a command whose
+bytes never reached the wire (transport failure or teardown gate) is
+unregistered immediately, because nothing will ever answer it.
+
+Identification and streaming follow the same rule. The identification request
+is the one command answered with version text instead of ``OK``, so an
+unsolicited power-on/reboot banner is never treated as its answer: it neither
+completes a firmware wait nor consumes another command's FIFO entry. Likewise
+only the sensor this session actually initialized may report the board as
+streaming; a measurement from any other sensor is still published, but it
+cannot fabricate a STREAMING state.
+
+Both queues are bounded. Bytes that never reach a newline are discarded past
+``MAX_PENDING_LINE_BYTES`` and the reader resynchronises on the next delimiter,
+so a device that stops framing cannot leak memory - and because the discarded
+run is dropped whole, it is never handed to the line handler as if it were a
+protocol reply, which would let it consume an ack FIFO entry. The published
+event queue is capped at ``EVENT_QUEUE_LIMIT``: overflow sheds the oldest
+event and counts it in ``dropped_events``. Neither loss is silent.
 
 See ``docs/DEVELOPER_GUIDE.md`` for command/reply framing and
 ``docs/DEVELOPER_GUIDE.md`` for the sensor data path.
@@ -50,8 +70,32 @@ FLOW_INTERVAL_HISTORY = 20
 # excluded from the cadence estimate used by the adaptive gap guard.
 FLOW_STALL_RECORD_SECONDS = 10.0
 # Commands whose reply never arrived stop correlating replies after this
-# window, so a "no reply" command cannot swallow later acknowledgements.
+# window, so a "no reply" command cannot swallow later acknowledgements. Only
+# entries nobody waits for any more may be released this way.
 STALE_REPLY_SECONDS = 5.0
+# Longest run of received bytes that may wait for its terminating newline.
+# A complete Multiboard2 line is a short measurement, acknowledgement or
+# firmware banner of at most a few dozen bytes, so this is thousands of times
+# the longest plausible reply (comfortably containing the longest ESP32 Wire
+# diagnostic). It exists only so a device that stops emitting newlines - a
+# partial write, a corrupted or looping byte stream - cannot make the reader's
+# pending buffer, and therefore the process, grow without limit. At the 115200
+# baud link rate the cap is reached only after roughly 5.7 s of unframed data.
+MAX_PENDING_LINE_BYTES = 64 * 1024
+# Bounds the published-event queue so a stalled or absent consumer (the sensors
+# page closed, mid-rebuild, or blocked) cannot grow it with every parsed
+# measurement. Overflow sheds the *oldest* queued event rather than the newest,
+# so a consumer that resumes sees current board state instead of a replay of
+# stale samples - the same policy AsyncCsvLogger.submit() already uses.
+# Each parsed line publishes a "raw" plus one typed event and the UI drains ten
+# times a second, so 20 000 slots is well over a hundred seconds of backlog:
+# a normal stall never reaches it, and memory stays bounded at a few MiB when
+# nobody drains at all.
+EVENT_QUEUE_LIMIT = 20_000
+# Board identification request. It is the one command answered with version
+# text instead of ``OK``, so an unsolicited version/boot banner must never be
+# attributed to it, nor may it consume any other command's FIFO entry.
+IDENTIFICATION_COMMAND = "V"
 # These states mirror the useful part of FluidicStudio's connection flow:
 # connect the board, identify it, configure the selected sensor, then stream.
 DISCONNECTED = "disconnected"
@@ -107,6 +151,9 @@ class _AckEntry:
     sent_at: float
     event: threading.Event | None = None
     succeeded: bool | None = None
+    # Set once the waiter gave up. Only abandoned (or waiter-less) entries may
+    # be pruned; a still-blocked waiter keeps its place at the head of the FIFO.
+    abandoned: bool = False
 
 
 class MultiboardConnection:
@@ -119,7 +166,15 @@ class MultiboardConnection:
     ) -> None:
         self.port = port
         self.connection = connection
-        self.events: queue.Queue[BackendEvent] = queue.Queue()
+        self.events: queue.Queue[BackendEvent] = queue.Queue(maxsize=EVENT_QUEUE_LIMIT)
+        # Published events lost to a stalled or absent consumer. Counted, never
+        # silent: a full queue means the UI is not draining, and the gap has to
+        # be visible instead of reading as a quiet board.
+        self._dropped_events = 0
+        # Receive bytes thrown away because the pending run exceeded
+        # MAX_PENDING_LINE_BYTES, and how many separate times that happened.
+        self._discarded_rx_bytes = 0
+        self._rx_buffer_overflows = 0
         # Optional read-only event subscribers provide fan-out for compact
         # Workspace views while preserving the original drain_events() queue.
         # Callbacks run on the producer thread and therefore must stay fast.
@@ -139,9 +194,17 @@ class MultiboardConnection:
         self._command_lock = threading.RLock()
         self._ack_lock = threading.Lock()
         self._ack_queue: deque[_AckEntry] = deque()
+        # Teardown barrier. Once close() starts, no further command bytes may
+        # reach the wire: otherwise an in-flight transaction (e.g. a pump
+        # start) could emit its ON command *after* the global POFF and leave
+        # the board driving a channel the app believes is off.
+        self._accepting_commands = True
         self._firmware_event = threading.Event()
         self._sample_condition = threading.Condition()
-        self._measurement_count = 0
+        # Parsed measurements counted per sensor id, so a wait for one sensor
+        # cannot be satisfied by another sensor's stream. Guarded by
+        # ``_sample_condition``.
+        self._measurement_counts: dict[str, int] = {}
         # Guards flow integration state shared between the reader thread and
         # threads that reset it (stop_sensor, close, watchdog retry).
         self._flow_lock = threading.Lock()
@@ -152,9 +215,28 @@ class MultiboardConnection:
         self._initialization_cancel = threading.Event()
         self._initializer: threading.Thread | None = None
         self._reader: threading.Thread | None = None
+
     @property
     def is_open(self) -> bool:
         return bool(self.connection is not None and getattr(self.connection, "is_open", False))
+
+    @property
+    def dropped_events(self) -> int:
+        """Published events shed because the bounded event queue was full."""
+
+        return self._dropped_events
+
+    @property
+    def discarded_rx_bytes(self) -> int:
+        """Receive bytes dropped because no newline arrived in time."""
+
+        return self._discarded_rx_bytes
+
+    @property
+    def rx_buffer_overflows(self) -> int:
+        """How often the receive buffer resynchronised on an oversized run."""
+
+        return self._rx_buffer_overflows
 
     @property
     def accumulated_volume_ul(self) -> float:
@@ -183,6 +265,12 @@ class MultiboardConnection:
             )
         self._opened_at = monotonic()
         self._stop_event.clear()
+        self._accepting_commands = True
+        self._internal_write = False
+        self._release_pending_ack_entries()
+        # The previous session's identification answer belongs to that session:
+        # a reconnect must not look identified before it asked.
+        self._firmware_event.clear()
         self._reader = threading.Thread(
             target=self._reader_loop,
             name=f"multiboard-reader-{self.port}",
@@ -209,8 +297,73 @@ class MultiboardConnection:
         return entry
 
     def _prune_stale_locked(self, now: float) -> None:
-        while self._ack_queue and now - self._ack_queue[0].sent_at > STALE_REPLY_SECONDS:
+        # Only entries nobody can be waiting for anymore are released. Pruning
+        # a live waiter would hand its reply to the next command, which would
+        # then look unacknowledged while every later command shifts by one.
+        while self._ack_queue:
+            head = self._ack_queue[0]
+            if now - head.sent_at <= STALE_REPLY_SECONDS:
+                break
+            if head.event is not None and not head.abandoned:
+                break
             self._ack_queue.popleft()
+
+    def _discard_ack_entry(self, entry: _AckEntry) -> None:
+        """Remove exactly one registered command from the FIFO (by identity)."""
+
+        with self._ack_lock:
+            for index, candidate in enumerate(self._ack_queue):
+                if candidate is entry:
+                    del self._ack_queue[index]
+                    return
+
+    def _abandon_ack_entry(self, entry: _AckEntry) -> None:
+        """Record that the waiter for this command gave up."""
+
+        with self._ack_lock:
+            entry.abandoned = True
+
+    def _release_pending_ack_entries(self) -> None:
+        """Drop the session's outstanding commands and release their waiters.
+
+        A reconnect must not inherit the previous session's backlog: the stale
+        entries would consume the first acknowledgements of the new session and
+        make a healthy board look unresponsive forever.
+        """
+
+        with self._ack_lock:
+            pending = list(self._ack_queue)
+            self._ack_queue.clear()
+        for entry in pending:
+            entry.succeeded = False
+            if entry.event is not None:
+                entry.event.set()
+
+    def _require_open_for_write(self) -> None:
+        """Raise if teardown has begun, so no bytes reach a closing board."""
+
+        if not self._accepting_commands and not self._internal_write:
+            raise RuntimeError(f"{self.port} is closing; command not sent")
+
+    def _write_command_locked(self, entry: _AckEntry, payload: bytes) -> None:
+        """Put one registered command on the wire, or unregister it again.
+
+        A rejected write (serial exception, write timeout, teardown gate) will
+        never be answered by the board, so its FIFO entry has to be removed
+        before the exception propagates. Otherwise the next command's ``OK`` is
+        consumed by the dead entry and the live command is reported as
+        unacknowledged.
+        """
+
+        try:
+            with self._write_lock:
+                self._require_open_for_write()
+                self.last_command = entry.command
+                self.connection.write(payload)
+                self.connection.flush()
+        except BaseException:
+            self._discard_ack_entry(entry)
+            raise
 
     def _pop_reply_target_locked(self, now: float) -> _AckEntry | None:
         self._prune_stale_locked(now)
@@ -226,11 +379,8 @@ class MultiboardConnection:
         payload = encode_command(command)
         clean = command.strip()
         with self._command_lock:
-            self._register_ack_entry(clean, None)
-            with self._write_lock:
-                self.last_command = clean
-                self.connection.write(payload)
-                self.connection.flush()
+            entry = self._register_ack_entry(clean, None)
+            self._write_command_locked(entry, payload)
         self._publish_event(BackendEvent("command", self.port, clean))
 
     def send_and_wait_for_ack(self, command: str, timeout: float = 1.0) -> bool:
@@ -248,12 +398,12 @@ class MultiboardConnection:
         event = threading.Event()
         with self._command_lock:
             entry = self._register_ack_entry(clean, event)
-            with self._write_lock:
-                self.last_command = clean
-                self.connection.write(encode_command(clean))
-                self.connection.flush()
+            self._write_command_locked(entry, encode_command(clean))
         self._publish_event(BackendEvent("command", self.port, clean))
         if not event.wait(max(0.0, float(timeout))):
+            # Nobody is blocked on this entry any more, so the stale window may
+            # release it later; until then a late reply stays attributed here.
+            self._abandon_ack_entry(entry)
             return False
         return entry.succeeded is True
 
@@ -309,23 +459,77 @@ class MultiboardConnection:
         return CommandSequenceResult(True, sequence, message="Transaction acknowledged")
 
     def request_firmware(self) -> None:
-        self._set_state(HANDSHAKE, "Requesting Multiboard firmware")
-        self.send("V")
+        """Ask the board to identify itself, without waiting for the answer."""
+
+        self._request_identification(None)
 
     def request_firmware_and_wait(self, timeout: float = 2.0) -> bool:
-        """Request identification and wait for either Ready or version text."""
+        """Request identification and wait for the answer to *this* request.
+
+        Only version/boot text that answers an outstanding identification
+        request completes the wait. The board also announces itself unprompted
+        (power-on, reboot, staggered startup), and such a banner proves nothing
+        about whether the query was answered — the caller would report a
+        firmware version it never received.
+
+        The entry is registered with the completion event, so the ack FIFO keeps
+        it for as long as this thread waits (a live waiter is never pruned) and
+        releases it exactly like an acknowledged command. The wait itself
+        happens outside ``_command_lock``.
+        """
 
         self._firmware_event.clear()
-        self.request_firmware()
-        return self._firmware_event.wait(max(0.0, float(timeout)))
+        entry = self._request_identification(self._firmware_event)
+        if not self._firmware_event.wait(max(0.0, float(timeout))):
+            # Nobody is blocked on this entry any more, so the stale window may
+            # release it later; until then a late banner stays attributed here.
+            self._abandon_ack_entry(entry)
+            return False
+        return entry.succeeded is True
+
+    def _request_identification(self, event: threading.Event | None) -> _AckEntry:
+        """Put one identification request on the wire; returns its FIFO entry."""
+
+        self._set_state(HANDSHAKE, "Requesting Multiboard firmware")
+        with self._command_lock:
+            entry = self._register_ack_entry(IDENTIFICATION_COMMAND, event)
+            self._write_command_locked(entry, encode_command(IDENTIFICATION_COMMAND))
+        self._publish_event(BackendEvent("command", self.port, IDENTIFICATION_COMMAND))
+        return entry
 
     def attach_initializer(self, thread: threading.Thread) -> None:
         self._initializer = thread
 
-    def _wait_for_measurements(self, starting_count: int, required: int, timeout: float) -> bool:
+    def _sample_count(self, sensor_id: str) -> int:
+        """Parsed measurements seen so far for one sensor id."""
+
+        with self._sample_condition:
+            return self._measurement_counts.get(sensor_id, 0)
+
+    def _record_measurement_locked(self, sensor_id: str) -> None:
+        """Count one parsed measurement; must hold ``_sample_condition``."""
+
+        self._measurement_counts[sensor_id] = self._measurement_counts.get(sensor_id, 0) + 1
+        self._sample_condition.notify_all()
+
+    def _wait_for_measurements(
+        self,
+        starting_count: int,
+        required: int,
+        timeout: float,
+        sensor_id: str,
+    ) -> bool:
+        """Wait for ``required`` further samples of exactly ``sensor_id``.
+
+        ``starting_count`` is the count observed for that sensor before the
+        stream command was sent, so only samples that arrive during this wait
+        can satisfy the requirement. Samples from other sensors are ignored:
+        a pressure stream must never prove that the liquid-flow sensor exists.
+        """
+
         deadline = monotonic() + max(0.0, float(timeout))
         with self._sample_condition:
-            while self._measurement_count - starting_count < required:
+            while self._measurement_counts.get(sensor_id, 0) - starting_count < required:
                 remaining = deadline - monotonic()
                 if remaining <= 0 or self._initialization_cancel.is_set():
                     return False
@@ -363,17 +567,21 @@ class MultiboardConnection:
                 ):
                     raise RuntimeError("L0 calibration was not acknowledged")
 
-                self.active_sensor_id = "liquid_flow"
+                sensor_id = "liquid_flow"
+                self.active_sensor_id = sensor_id
                 self._reset_integration(keep_total=True)
                 with self._sample_condition:
-                    starting_count = self._measurement_count
+                    starting_count = self._sample_count(sensor_id)
                 self._set_state(STREAM_REQUESTED, "Requesting liquid-flow samples…")
                 if not self.send_and_wait_for_ack(
-                    SENSORS["liquid_flow"].start_command, timeout=1.5
+                    SENSORS[sensor_id].start_command, timeout=1.5
                 ):
                     raise RuntimeError("DFON was not acknowledged")
                 if self._wait_for_measurements(
-                    starting_count, required=2, timeout=sample_timeout_seconds
+                    starting_count,
+                    required=2,
+                    timeout=sample_timeout_seconds,
+                    sensor_id=sensor_id,
                 ):
                     self._set_state(STREAMING, "Liquid-flow sensor connected")
                     if not monitor_stream:
@@ -383,11 +591,11 @@ class MultiboardConnection:
                     # DFOFF/L0/DFON sequence again instead of retrying DFON
                     # once and waiting forever.
                     with self._sample_condition:
-                        observed_count = self._measurement_count
+                        observed_count = self._sample_count(sensor_id)
                     while self.is_open and not self._initialization_cancel.is_set():
                         with self._sample_condition:
                             self._sample_condition.wait(timeout=5.0)
-                            current_count = self._measurement_count
+                            current_count = self._sample_count(sensor_id)
                         if current_count != observed_count:
                             observed_count = current_count
                             continue
@@ -481,7 +689,26 @@ class MultiboardConnection:
 
     def _publish_event(self, event: BackendEvent) -> None:
         """Publish to the legacy queue and to non-consuming subscribers."""
-        self.events.put(event)
+        try:
+            self.events.put_nowait(event)
+        except queue.Full:
+            # Bounded-queue policy: shed the oldest pending event rather than
+            # growing memory without limit while nobody drains the queue. The
+            # loss is counted and the newest event still lands, so a consumer
+            # that resumes continues from current board state.
+            try:
+                self.events.get_nowait()
+            except queue.Empty:
+                # A concurrent drain_events() emptied the queue first.
+                pass
+            else:
+                self._dropped_events += 1
+            try:
+                self.events.put_nowait(event)
+            except queue.Full:
+                # Shed an event the consumer never got; count it so the loss is
+                # not invisible.
+                self._dropped_events += 1
         with self._event_subscribers_lock:
             subscribers = tuple(self._event_subscribers)
         for callback in subscribers:
@@ -514,6 +741,8 @@ class MultiboardConnection:
                     raw = bytes(buffer[:end])
                     del buffer[:end]
                     self._handle_line(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
+                if len(buffer) > MAX_PENDING_LINE_BYTES:
+                    self._resynchronise_receive_buffer(buffer)
         except BaseException as exc:
             if not self._stop_event.is_set():
                 self._set_state(ERROR, f"Serial reader failed: {exc}")
@@ -524,11 +753,71 @@ class MultiboardConnection:
                     BackendEvent("unknown", self.port, buffer.decode("utf-8", errors="replace"))
                 )
 
+    def _resynchronise_receive_buffer(self, buffer: bytearray) -> None:
+        """Drop an unframed run that exceeded ``MAX_PENDING_LINE_BYTES``.
+
+        No newline arrived for more bytes than any real reply could occupy, so
+        the pending data is noise: a device that stopped framing, a partial
+        write, or a corrupted/looping byte stream. Keeping it would let the
+        buffer - and the process - grow for as long as the port stays open.
+
+        The run is dropped *whole* rather than trimmed, and framing then resumes
+        at the next delimiter. That is what keeps it safe for the ack FIFO: no
+        part of the discarded run is ever handed to ``_handle_line``, so it
+        cannot be parsed as an ``OK`` and consume an outstanding command's
+        reply. It also means the first real line after the corruption burst is
+        parsed normally instead of being mangled by a retained garbage prefix.
+        The only loss is a single line longer than the cap, which no plausible
+        Multiboard2 reply is.
+        """
+
+        discarded = len(buffer)
+        buffer.clear()
+        self._discarded_rx_bytes += discarded
+        self._rx_buffer_overflows += 1
+        # Reported as its own event kind so neither the connection state machine
+        # nor an awaiting firmware/measurement wait is disturbed by it, and the
+        # loss is visible in the event stream instead of silent.
+        self._publish_event(
+            BackendEvent(
+                "rx_overflow",
+                self.port,
+                f"Discarded {discarded} unframed receive bytes "
+                f"(no newline within {MAX_PENDING_LINE_BYTES} bytes); "
+                "resynchronised on the next line",
+            )
+        )
+
     def _resolve_reply_target(self, now: float) -> _AckEntry | None:
         """Pop the oldest outstanding command for the incoming OK/FAIL reply."""
 
         with self._ack_lock:
             return self._pop_reply_target_locked(now)
+
+    def _resolve_identification_target(self, now: float) -> _AckEntry | None:
+        """Resolve the identification command's entry, if it is still queued.
+
+        Version/boot text is only the answer to the identification request, so
+        it consumes a FIFO entry only while that request is the oldest
+        outstanding command, and returns that entry so the caller can tell a
+        real answer from an unsolicited banner (board reboot, staggered
+        startup message). An unsolicited banner must leave an unrelated
+        in-flight command — and its waiter — untouched, and must not complete a
+        firmware wait.
+        """
+
+        with self._ack_lock:
+            self._prune_stale_locked(now)
+            if not self._ack_queue:
+                return None
+            head = self._ack_queue[0]
+            if head.command != IDENTIFICATION_COMMAND:
+                return None
+            entry = self._ack_queue.popleft()
+            entry.succeeded = True
+            if entry.event is not None:
+                entry.event.set()
+            return entry
 
     def _handle_line(self, line: str) -> None:
         self.last_rx_line = line
@@ -539,16 +828,16 @@ class MultiboardConnection:
         reply = parse_reply(line, self.active_sensor_id)
         if reply.kind == "firmware":
             self.firmware = reply.message
-            self._firmware_event.set()
             # The identification request is answered with version text, not
-            # with OK; consume its FIFO entry so later OKs stay in order.
-            self._resolve_reply_target(monotonic())
+            # with OK; consume its FIFO entry so later OKs stay in order. Only
+            # a correlated answer releases a pending firmware wait.
+            self._resolve_identification_target(monotonic())
             self._set_state(READY, f"Firmware identified: {reply.message}")
         elif reply.kind == "boot":
-            self._firmware_event.set()
-            # A boot/version line answers the identification request; consume
-            # its FIFO entry so later OKs stay in order.
-            self._resolve_reply_target(monotonic())
+            # A boot/version line answers the identification request, but only
+            # while that request is the oldest outstanding command. Resolution
+            # (not the line itself) is what releases the firmware wait.
+            self._resolve_identification_target(monotonic())
         elif reply.kind == "error":
             # Only fail the acknowledged command this error actually belongs
             # to; an unsolicited board error must not reject an unrelated
@@ -578,8 +867,7 @@ class MultiboardConnection:
         now_monotonic = monotonic()
         measurement = reply.measurement
         with self._sample_condition:
-            self._measurement_count += 1
-            self._sample_condition.notify_all()
+            self._record_measurement_locked(measurement.sensor_id)
         volume = None
         if measurement.sensor_id == "liquid_flow":
             with self._flow_lock:
@@ -596,7 +884,13 @@ class MultiboardConnection:
             raw_line=line,
             raw_value_ml_min=measurement.raw_value_ml_min,
         )
-        self._set_state(STREAMING, f"{measurement.sensor_id} measurement received")
+        # Only the sensor this session actually initialized may report the board
+        # as streaming. A measurement from any other sensor (a pressure board
+        # answering while liquid flow was requested, a late line from a stopped
+        # stream) is still published, but it must not fabricate a STREAMING
+        # state for a sensor that never produced a stream.
+        if measurement.sensor_id == self.active_sensor_id:
+            self._set_state(STREAMING, f"{measurement.sensor_id} measurement received")
         self._publish_event(BackendEvent("measurement", self.port, reply=reply, sample=sample))
 
     def _integrate_flow_sample_locked(self, value: float, now_monotonic: float) -> float:
@@ -663,31 +957,47 @@ class MultiboardConnection:
             # "retry disconnect" flow succeed on the second attempt after a
             # failed first close.
             return True
-        self._initialization_cancel.set()
-        with self._sample_condition:
-            self._sample_condition.notify_all()
-        self._set_state(CLOSING, "Closing Multiboard connection")
         pumps_stopped = False
         try:
-            # Attempt the global pump shutdown twice before giving up on the
-            # acknowledgement, then continue with the remaining teardown.
-            pumps_stopped = self.send_and_wait_for_ack("POFF", timeout=1.0)
-            if not pumps_stopped and self.is_open:
+            # Flip the command gate and emit POFF/DFOFF atomically with respect
+            # to any in-flight transaction: a sender either finishes its current
+            # step before the flip or finds the gate closed once it acquires the
+            # lock. This ordering is what prevents a late P<n>ON from landing
+            # after the global power-off. _internal_write stays True only for
+            # this teardown's own writes and is cleared before the lock is
+            # released, so a waiting sender is rejected, not admitted.
+            with self._command_lock:
+                self._accepting_commands = False
+                self._internal_write = True
+                self._initialization_cancel.set()
+                with self._sample_condition:
+                    self._sample_condition.notify_all()
+                self._set_state(CLOSING, "Closing Multiboard connection")
+                # Attempt the global pump shutdown twice before giving up on
+                # the acknowledgement, then continue with the remaining teardown.
                 pumps_stopped = self.send_and_wait_for_ack("POFF", timeout=1.0)
-            if not pumps_stopped:
-                self._publish_event(
-                    BackendEvent(
-                        "error",
-                        self.port,
-                        "POFF was not acknowledged; shutting down anyway",
+                if not pumps_stopped and self.is_open:
+                    pumps_stopped = self.send_and_wait_for_ack("POFF", timeout=1.0)
+                if not pumps_stopped:
+                    self._publish_event(
+                        BackendEvent(
+                            "error",
+                            self.port,
+                            "POFF was not acknowledged; shutting down anyway",
+                        )
                     )
-                )
+                try:
+                    self.stop_sensor()
+                except Exception as exc:
+                    self._publish_event(
+                        BackendEvent("error", self.port, f"DFOFF failed: {exc}")
+                    )
+                # Clear the internal bypass while still holding the lock so a
+                # sender that acquires it next is gated out.
+                self._internal_write = False
         except Exception as exc:
             self._publish_event(BackendEvent("error", self.port, f"Stop failed: {exc}"))
-        try:
-            self.stop_sensor()
-        except Exception as exc:
-            self._publish_event(BackendEvent("error", self.port, f"DFOFF failed: {exc}"))
+            self._internal_write = False
         self._stop_event.set()
         initializer = self._initializer
         if initializer is not None and initializer is not threading.current_thread():
@@ -698,6 +1008,10 @@ class MultiboardConnection:
             if getattr(self.connection, "is_open", False):
                 self.connection.close()
         finally:
+            self._internal_write = False
+            # The backlog belongs to the session that just ended: keeping it
+            # would shift every acknowledgement of a reconnect by one.
+            self._release_pending_ack_entries()
             self.state = DISCONNECTED
             self._publish_event(BackendEvent("disconnected", self.port))
         return pumps_stopped

@@ -205,10 +205,13 @@ There are two broad synchronization patterns.
 Subscribers are observers only. Exceptions in a subscriber must not kill the
 serial reader.
 
-The current reader-failure path can leave the connection marked open while
-command methods remain callable, and the normal event queue is unbounded. A
-reader exception must therefore be treated as a transport/lifecycle fault, not
-as a recoverable UI notification alone.
+The drainable event queue is bounded (`EVENT_QUEUE_LIMIT`) and sheds oldest-first,
+with the loss counted in `dropped_events()`, and the reader's unframed byte
+buffer is bounded (`MAX_PENDING_LINE_BYTES`) with overflow discarded and counted.
+
+The reader-failure path can still leave the connection marked open while command
+methods remain callable. A reader exception must therefore be treated as a
+transport/lifecycle fault, not as a recoverable UI notification alone.
 
 ### Shared object/model reads
 

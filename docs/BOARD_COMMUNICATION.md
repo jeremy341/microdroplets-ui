@@ -395,10 +395,18 @@ The connection supports:
 This allows multiple views to observe the same stream without stealing events
 from each other.
 
-The event queue is currently unbounded, and a reader failure can leave the
-connection marked open while command paths remain callable. Consumers must treat
-reader-error/disconnected events as a transport fault and the queue as a
-backpressure risk until those lifecycle contracts are tightened.
+Both queues are bounded. `drain_events()` holds at most `EVENT_QUEUE_LIMIT`
+entries and sheds the oldest on overflow, counting every shed event in
+`dropped_events()`; because a resumed consumer then sees current board state
+rather than a stale backlog, subscribers (`subscribe_events()`) still receive
+every event. The reader's unframed byte buffer is capped at
+`MAX_PENDING_LINE_BYTES`; a longer newline-free run is discarded whole and
+counted in `discarded_rx_bytes()`/`rx_buffer_overflows()` so framing resumes at
+the next delimiter and no partial run is ever parsed as a protocol line.
+
+A reader failure can still leave the connection marked open while command paths
+remain callable, so consumers must treat reader-error/disconnected events as a
+transport fault rather than a recoverable notification.
 
 ## 13. Connection close behavior
 
