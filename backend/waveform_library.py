@@ -125,29 +125,12 @@ class WaveformLibrary:
             count = len(values) if template == "Sawtooth" else len(values) + max(0, len(values) - 2)
         return max(100, count * step_ms)
 
-    def load(self) -> None:
-        """Reload the library only when the file on disk actually changed.
+    def _parse_waveforms(self, raw_items: list) -> list[WaveformDefinition]:
+        """Build definitions from stored records, dropping unusable entries."""
 
-        Views poll this method (the Workspace wave panel refreshes on a timer),
-        so an unconditional disk read plus JSON parse on every call is pure
-        avoidable I/O on the UI thread. ``save``/``delete`` keep the in-memory
-        items authoritative and refresh the stamp after writing.
-        """
-
-        stamp = self._file_stamp()
-        if stamp is not None and stamp == self._loaded_stamp:
-            return
-        self._loaded_stamp = stamp
-        self._items = []
-        if not self.path.exists():
-            return
-        try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return
-        if payload.get("schema_version") != SCHEMA_VERSION:
-            return
-        for raw in payload.get("waveforms", []):
+        items: list[WaveformDefinition] = []
+        seen_names: set[str] = set()
+        for raw in raw_items:
             try:
                 definition = WaveformDefinition(
                     id=str(raw["id"]),
@@ -167,9 +150,53 @@ class WaveformLibrary:
             except (KeyError, TypeError, ValueError):
                 continue
             valid, _ = validate_definition(definition)
-            if valid and self.by_name(definition.name) is None:
-                self._items.append(definition)
-        self._items.sort(key=lambda item: item.name.casefold())
+            if not valid:
+                continue
+            name_key = definition.name.strip().casefold()
+            if name_key in seen_names:
+                continue
+            seen_names.add(name_key)
+            items.append(definition)
+        items.sort(key=lambda item: item.name.casefold())
+        return items
+
+    def load(self) -> None:
+        """Reload the library only when the file on disk actually changed.
+
+        Views poll this method (the Workspace wave panel refreshes on a timer),
+        so an unconditional disk read plus JSON parse on every call is pure
+        avoidable I/O on the UI thread. ``save``/``delete`` keep the in-memory
+        items authoritative and refresh the stamp after writing.
+
+        The new items and the reload stamp are committed only after a read that
+        actually succeeded. A transient read error, corrupt JSON or a foreign
+        ``schema_version`` therefore leaves the in-memory library untouched and
+        leaves the stamp unpinned, so the next poll retries and a later good
+        read can still recover.
+        """
+
+        stamp = self._file_stamp()
+        if stamp is not None and stamp == self._loaded_stamp:
+            return
+        if not self.path.exists():
+            # The library file really is gone; an empty library is the truth.
+            self._items = []
+            self._loaded_stamp = stamp
+            return
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        if payload.get("schema_version") != SCHEMA_VERSION:
+            return
+        raw_items = payload.get("waveforms")
+        if not isinstance(raw_items, list):
+            return
+        items = self._parse_waveforms(raw_items)
+        self._items = items
+        self._loaded_stamp = stamp
 
     def _write(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

@@ -22,6 +22,25 @@ from backend.waveform_engine import (
 )
 
 
+def _normalize_channel(channel: object) -> int:
+    """Return ``channel`` as the int key used for every bookkeeping lookup.
+
+    ``ChannelOwnershipManager`` normalizes with ``int()`` too, so the execution
+    registry, the runtime states and the ownership table must all be keyed by
+    the same normalized value.  A caller that passed ``"2"`` would otherwise
+    claim CH2 while registering the run under the key ``"2"``: the identity
+    guard would then reject that runner's own commands and ``state``/``stop``/
+    ``join`` would look in a key that was never written.
+    """
+
+    try:
+        return int(channel)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(
+            f"Pump channel must be an integer number, got {channel!r}."
+        ) from exc
+
+
 @dataclass(frozen=True)
 class WaveRuntimeState:
     channel: int
@@ -63,6 +82,9 @@ class WaveExecutionService:
         on_step: Callable[[int, WaveStep], None] | None = None,
         on_finished: Callable[[bool, str], None] | None = None,
     ) -> None:
+        # One key for the ownership claim, the registry, the runtime state, the
+        # callbacks and the routed commands.
+        channel = _normalize_channel(channel)
         steps = tuple(generate_steps(definition, channel=channel))
         if not steps:
             raise ValueError("Waveform contains no generated steps.")
@@ -71,26 +93,27 @@ class WaveExecutionService:
         driver_index = driver_for_channel(channel)
 
         def routed_send(command: str):
-            return self._route_command(channel, command)
+            return self._route_command(channel, execution, command)
 
         def step_callback(index: int, step: WaveStep):
             with self._lock:
-                state = self._states.get(channel)
-                if state is not None:
-                    self._states[channel] = replace(
-                        state,
-                        status="running",
-                        current_step=index,
-                        current_vpp=step.amplitude_vpp,
-                    )
+                if self._executions.get(channel) is execution:
+                    state = self._states.get(channel)
+                    if state is not None:
+                        self._states[channel] = replace(
+                            state,
+                            status="running",
+                            current_step=index,
+                            current_vpp=step.amplitude_vpp,
+                        )
             if on_step is not None:
                 on_step(index, step)
 
         def finished_callback(completed: bool, message: str):
             with self._lock:
-                execution = self._executions.get(channel)
+                superseded = self._executions.get(channel) is not execution
                 owner_still_present = (
-                    execution is not None
+                    not superseded
                     and self.pump_control.ownership.get(channel) is not None
                 )
                 final_status = "error" if owner_still_present else (
@@ -101,11 +124,18 @@ class WaveExecutionService:
                     final_message = (
                         f"{message} · OFF was not confirmed; CH{channel} remains locked."
                     )
-                state = self._states.get(channel)
-                if state is not None:
-                    self._states[channel] = replace(
-                        state, status=final_status, message=final_message
+                if superseded:
+                    # A newer wave owns this channel now. Its runtime state must
+                    # not be overwritten by a run that no longer serves it.
+                    final_message = (
+                        f"{message} · a newer waveform took over CH{channel}."
                     )
+                else:
+                    state = self._states.get(channel)
+                    if state is not None:
+                        self._states[channel] = replace(
+                            state, status=final_status, message=final_message
+                        )
             if on_finished is not None:
                 on_finished(completed and not owner_still_present, final_message)
 
@@ -142,11 +172,22 @@ class WaveExecutionService:
                 self.pump_control.ownership.release(channel, owner.token)
             raise
 
-    def _route_command(self, channel: int, command: str):
+    def _is_current(self, channel: int, execution: _Execution) -> bool:
+        """Return True only while ``execution`` still serves ``channel``."""
+
         with self._lock:
-            execution = self._executions.get(channel)
-        if execution is None:
-            raise RuntimeError(f"No waveform execution is registered for CH{channel}.")
+            return self._executions.get(channel) is execution
+
+    def _route_command(self, channel: int, execution: _Execution, command: str):
+        # A runner that outlived its registration (for example a worker still
+        # unwinding after ``stop_all`` timed out) must never act on a channel
+        # that a newer wave has taken over: its final OFF would switch off the
+        # new wave and release the new owner's reservation.
+        if not self._is_current(channel, execution):
+            raise RuntimeError(
+                f"CH{channel} is no longer served by this waveform execution; "
+                "the command was discarded."
+            )
 
         clean = command.strip()
         on_command = f"P{channel}ON"
@@ -190,7 +231,7 @@ class WaveExecutionService:
         raise RuntimeError(f"Unexpected waveform command for CH{channel}: {clean}")
 
     def stop(self, channel: int) -> bool:
-        channel = int(channel)
+        channel = _normalize_channel(channel)
         with self._lock:
             execution = self._executions.get(channel)
         if execution is None:
@@ -225,7 +266,7 @@ class WaveExecutionService:
 
     def join(self, channel: int, timeout: float | None = None) -> None:
         with self._lock:
-            execution = self._executions.get(int(channel))
+            execution = self._executions.get(_normalize_channel(channel))
         if execution is not None:
             execution.runner.join(timeout)
 
@@ -270,7 +311,7 @@ class WaveExecutionService:
 
     def state(self, channel: int) -> WaveRuntimeState | None:
         with self._lock:
-            return self._states.get(int(channel))
+            return self._states.get(_normalize_channel(channel))
 
     def snapshot(self) -> dict[int, WaveRuntimeState]:
         with self._lock:
@@ -278,7 +319,7 @@ class WaveExecutionService:
 
     def is_running(self, channel: int) -> bool:
         with self._lock:
-            execution = self._executions.get(int(channel))
+            execution = self._executions.get(_normalize_channel(channel))
         return execution is not None and execution.runner.is_running
 
     def cleanup_finished(self) -> None:

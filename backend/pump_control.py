@@ -66,21 +66,33 @@ class PumpControlService:
     def start_manual(self, driver_index: int, frequency_hz: int, carrier_waveform: str,
                      channel: int, amplitude_vpp: int) -> PumpOperationResult:
         with self._operation_lock:
+            # Build (and therefore validate) the whole sequence before reserving
+            # the channel. A rejected argument must leave no reservation behind,
+            # and nothing has been transmitted yet, so the hardware is unchanged.
+            try:
+                commands = pump_start_commands(
+                    driver_index,
+                    frequency_hz,
+                    carrier_waveform,
+                    channel,
+                    amplitude_vpp,
+                )
+                rollback_command = pump_state_command(channel, False)
+            except ValueError as exc:
+                return PumpOperationResult(
+                    False, channel, True, str(exc), hardware_state="unchanged"
+                )
+
+            # Contention is a normal outcome of this command, not an exception:
+            # report it as a failure result naming the channel and its owner.
             try:
                 owner = self.ownership.claim(channel, MANUAL, label="manual pump control")
             except ChannelOwnershipError as exc:
                 return PumpOperationResult(False, channel, True, str(exc), hardware_state="unchanged")
 
-            rollback_command = pump_state_command(channel, False)
             try:
                 result = self.connection.send_sequence(
-                    pump_start_commands(
-                        driver_index,
-                        frequency_hz,
-                        carrier_waveform,
-                        channel,
-                        amplitude_vpp,
-                    ),
+                    commands,
                     timeout=self.ack_timeout,
                     rollback_command=rollback_command,
                 )

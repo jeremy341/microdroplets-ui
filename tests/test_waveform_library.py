@@ -1,4 +1,5 @@
 from dataclasses import replace
+import json
 
 import pytest
 
@@ -130,5 +131,129 @@ def test_save_keeps_the_reload_guard_in_sync(tmp_path):
     library.load()
     assert [item.name for item in library.items] == ["Stored"]
     library.delete(library.items[0].id)
+    library.load()
+    assert library.items == ()
+
+
+class FailingReadPath:
+    """Real path whose text reads fail on demand."""
+
+    def __init__(self, real, fail=True):
+        self._real = real
+        self._fail = fail
+        self.reads = 0
+
+    def fail_reads(self):
+        self._fail = True
+
+    def allow_reads(self):
+        self._fail = False
+
+    def stat(self):
+        return self._real.stat()
+
+    def exists(self):
+        return self._real.exists()
+
+    def read_text(self, encoding="utf-8"):
+        self.reads += 1
+        if self._fail:
+            raise OSError("transient read failure")
+        return self._real.read_text(encoding=encoding)
+
+
+def seed_library(tmp_path, names=("Alpha", "Beta", "Gamma")):
+    path = tmp_path / "waveforms.json"
+    path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "waveforms": [
+                {
+                    "id": f"wave-{index}", "name": name, "template": "Square",
+                    "min_vpp": 80, "max_vpp": 180, "increment_vpp": 10,
+                    "step_duration_ms": 100, "cycle_duration_ms": 200,
+                    "cycles": 5,
+                }
+                for index, name in enumerate(names)
+            ],
+        }),
+        encoding="utf-8",
+    )
+    return path
+
+
+def seeded_library(path):
+    """Load a library from a seeded file and return it with its items."""
+
+    library = WaveformLibrary(path)
+    assert [item.name for item in library.items] == ["Alpha", "Beta", "Gamma"]
+    return library
+
+
+def test_failed_read_keeps_previous_items_and_a_later_load_recovers(tmp_path):
+    library = seeded_library(seed_library(tmp_path))
+    expected = library.items
+
+    # A changed file must reach the read, which then fails transiently.
+    seed_library(tmp_path, names=("Delta", "Epsilon", "Zeta"))
+    flaky = FailingReadPath(tmp_path / "waveforms.json")
+    library.path = flaky
+    library.load()
+    assert flaky.reads == 1
+    # The transient failure must not blank the in-memory library...
+    assert library.items == expected
+    # ...and must not pin the reload stamp, so polling keeps retrying.
+    library.load()
+    assert flaky.reads == 2
+
+    flaky.allow_reads()
+    library.load()
+    assert [item.name for item in library.items] == ["Delta", "Epsilon", "Zeta"]
+
+
+def test_corrupt_payload_keeps_previous_items_and_a_later_load_recovers(tmp_path):
+    library = seeded_library(seed_library(tmp_path))
+    expected = library.items
+
+    (tmp_path / "waveforms.json").write_text(
+        '{"schema_version": 1, "waveforms": [', encoding="utf-8"
+    )
+    library.load()
+    assert library.items == expected
+
+    # Repeated polls must keep the library usable while the file is broken.
+    library.load()
+    assert library.items == expected
+
+    seed_library(tmp_path, names=("Delta", "Epsilon", "Zeta"))
+    library.load()
+    assert [item.name for item in library.items] == ["Delta", "Epsilon", "Zeta"]
+
+
+def test_schema_mismatch_keeps_previous_items_and_a_later_load_recovers(tmp_path):
+    library = seeded_library(seed_library(tmp_path))
+    expected = library.items
+
+    (tmp_path / "waveforms.json").write_text(
+        json.dumps({"schema_version": 99, "waveforms": [
+            {"id": "future", "name": "From the future", "template": "Square",
+             "min_vpp": 80, "max_vpp": 180, "increment_vpp": 10,
+             "step_duration_ms": 100, "cycle_duration_ms": 200, "cycles": 5},
+        ]}),
+        encoding="utf-8",
+    )
+    library.load()
+    assert library.items == expected
+
+    # A save still works over a foreign file and must not raise; the in-memory
+    # library stays authoritative and is rewritten to disk.
+    library.save(make_definition(name="Stored", waveform_id="stored"))
+    assert [item.name for item in library.items] == [
+        "Alpha", "Beta", "Gamma", "Stored"
+    ]
+
+    (tmp_path / "waveforms.json").write_text(
+        json.dumps({"schema_version": 1, "waveforms": []}), encoding="utf-8"
+    )
     library.load()
     assert library.items == ()
